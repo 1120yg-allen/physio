@@ -5,7 +5,7 @@ import { randomUUID } from 'node:crypto';
 import { dirname } from 'node:path';
 import { HttpLineApi } from './line/api';
 import { loadConfig } from './config';
-import { accessTokenProvider, clientFromEnv, createDedicatedCalendar, gcalFiles, readConfig, runAuthFlow, saveConfig } from './gcal/auth';
+import { accessTokenProvider, createDedicatedCalendar, gcalFiles, readConfig, resolveClient, runAuthFlow, saveConfig } from './gcal/auth';
 
 const cfg = loadConfig();
 const [cmd, arg] = process.argv.slice(2);
@@ -34,12 +34,12 @@ if (cmd === 'backup') {
   console.log(r.ok ? '已送出' : `失敗:${r.detail}`);
   process.exit(r.ok ? 0 : 1);
 } else if (cmd === 'gcal-auth') {
-  const creds = clientFromEnv();
+  const files = gcalFiles(dirname(cfg.dbPath));
+  const creds = resolveClient(files);
   if (!creds) {
-    console.log('請先設定環境變數 GCAL_CLIENT_ID 與 GCAL_CLIENT_SECRET(見 README「Google 行事曆」)');
+    console.log('請先設定 Google 用戶端 ID 與密鑰:在「排程」頁貼上,或設定環境變數 GCAL_CLIENT_ID / GCAL_CLIENT_SECRET(見 README)');
     process.exit(1);
   }
-  const files = gcalFiles(dirname(cfg.dbPath));
   const refresh = await runAuthFlow(creds, files, console.log);
   if (!readConfig(files)) {
     const id = await createDedicatedCalendar(accessTokenProvider(creds, refresh), '居家物治排程');

@@ -17,7 +17,7 @@ startDailyBackup(repo, cfg.backupDir, (p) => console.log(`已完成每日備份:
 const gcal = createGcalService(repo, dirname(cfg.dbPath));
 gcal.start();
 const gs = gcal.status();
-console.log(gs.enabled ? `Google 行事曆同步:已啟用(隱私等級 ${gs.privacy})` : `Google 行事曆同步:未啟用(${gs.reason ?? ''})`);
+console.log(gs.enabled ? `Google 行事曆同步:已啟用(隱私等級 ${gs.privacy})` : `Google 行事曆同步:未啟用(${gs.reason ?? ''});可在「排程」頁按「連結 Google 帳號」設定`);
 
 const line = createLineService(repo);
 line.start();

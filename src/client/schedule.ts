@@ -26,6 +26,9 @@ const ENC_STATUS = { draft: '草稿', signed: '已簽章', submitted: '已送出
 
 interface GcalStatus {
   enabled: boolean;
+  setup_available: boolean;
+  client_configured: boolean;
+  authorized: boolean;
   reason?: string;
   privacy: string;
   running: boolean;
@@ -126,6 +129,70 @@ export function scheduleViews(ctx: ViewCtx): {
     );
   }
 
+  /** 呼叫伺服器的 JSON 端點;錯誤時回傳伺服器給的中文說明 */
+  async function api(path: string, body?: unknown): Promise<{ ok: boolean; data: Record<string, unknown> }> {
+    try {
+      const res = await fetch(path, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body ?? {}), signal: AbortSignal.timeout(60_000) });
+      return { ok: res.ok, data: (await res.json()) as Record<string, unknown> };
+    } catch {
+      return { ok: false, data: { error: '無法連線到伺服器' } };
+    }
+  }
+
+  /** Google 行事曆卡片:依目前狀態顯示「設定 → 連結 → 同步/中斷」 */
+  function gcalCard(g: GcalStatus | null, msg: HTMLElement): HTMLElement {
+    const card = h('div', { className: 'card' }, h('h2', null, 'Google 行事曆'));
+    const fail = (data: Record<string, unknown>): void => msg.replaceChildren(ctx.errorBox(String(data.error ?? '操作失敗')));
+
+    if (g === null) {
+      card.append(h('p', { className: 'muted' }, STATIC_MODE ? '純本機版無法使用 Google 行事曆同步。請在自己的電腦執行 npm start 使用完整版。' : '無法取得狀態(離線或伺服器未啟動)。'));
+      return card;
+    }
+
+    if (g.enabled) {
+      card.append(
+        h('p', { className: 'muted' }, `已連結。隱私等級:${g.privacy === 'full' ? '完整(含姓名、地址、備註)' : '最小(只顯示遮罩姓名與時段)'}。${g.last_run_at ? `上次同步 ${g.last_run_at.slice(0, 16).replace('T', ' ')}:${g.last_ok ? '成功' : `失敗 — ${g.last_error ?? ''}`}` : '尚未同步。'}`),
+        h('div', { className: 'row' },
+          h('button', { onclick: () => void (async () => { await api('/api/gcal/sync'); await ctx.doSync(); await ctx.render(); })() }, '立即同步 Google'),
+          h('button', { className: 'danger', onclick: () => { if (confirm('確定中斷與 Google 的連結?\n(Google 上的「居家物治排程」行事曆與事件會保留,可自行刪除)')) void api('/api/gcal/disconnect').then((r) => (r.ok ? ctx.render() : fail(r.data))); } }, '中斷連結')),
+      );
+      return card;
+    }
+
+    const local = ['127.0.0.1', 'localhost', '[::1]'].includes(location.hostname);
+    const idIn = h('input', { placeholder: '用戶端 ID(以 .apps.googleusercontent.com 結尾)', autocomplete: 'off' });
+    const secIn = h('input', { type: 'password', placeholder: '用戶端密鑰', autocomplete: 'off' });
+    const form = h('div', null,
+      h('details', null,
+        h('summary', null, '怎麼取得用戶端 ID 與密鑰?(第一次需要,約 5 分鐘)'),
+        h('ol', { className: 'muted' },
+          h('li', null, '開啟 console.cloud.google.com,用你的 Google 帳號登入,建立一個專案。'),
+          h('li', null, '搜尋並啟用「Google Calendar API」。'),
+          h('li', null, '到「OAuth 同意畫面」:使用者類型選「外部」,填應用程式名稱,並在「測試使用者」加入你自己的 Gmail。'),
+          h('li', null, '到「憑證」→ 建立憑證 → OAuth 用戶端 ID → 應用程式類型選「電腦版應用程式」。'),
+          h('li', null, '建立後會顯示「用戶端 ID」與「用戶端密鑰」,複製貼到下面。')),
+        h('p', { className: 'muted' }, '密鑰只存放在你這台電腦的資料目錄(權限 600),不會上傳到任何地方。')),
+      h('label', { className: 'f' }, '用戶端 ID'), idIn,
+      h('label', { className: 'f' }, '用戶端密鑰'), secIn,
+      h('p', null, h('button', { className: 'primary', onclick: () => void api('/api/gcal/client', { client_id: idIn.value, client_secret: secIn.value }).then((r) => (r.ok ? ctx.render() : fail(r.data))) }, '儲存')),
+    );
+
+    if (!g.client_configured) {
+      card.append(h('p', { className: 'muted' }, `尚未設定。連結 Google 前,需要先取得 Google 的「用戶端 ID」與「密鑰」。`), form);
+      return card;
+    }
+
+    // 已有用戶端設定,尚未連結
+    card.append(
+      h('p', { className: 'muted' }, '已設定用戶端。按下方按鈕會前往 Google 登入並同意授權;完成後會自動建立專用行事曆「居家物治排程」(只同步這一個,讀不到你其他行事曆)。'),
+      local ? '' : h('p', { className: 'precautions' }, `目前網址是 ${location.host}。Google 授權只能在「執行伺服器的那台電腦」上完成,請改用 http://127.0.0.1:埠號 開啟本系統再按連結。`),
+      h('div', { className: 'row' },
+        h('button', { className: 'primary', onclick: () => void api('/api/gcal/connect').then((r) => { if (r.ok && typeof r.data.url === 'string') location.href = r.data.url; else fail(r.data); }) }, '🔗 連結 Google 帳號'),
+        h('button', { onclick: (e: Event) => { (e.currentTarget as HTMLElement).replaceWith(form); } }, '重設用戶端 ID/密鑰')),
+    );
+    return card;
+  }
+
   async function viewSchedule(mode: 'day' | 'week', date: string): Promise<void> {
     const dates = mode === 'day' ? [date] : weekDates(date);
     const all = await svc.listAppointments(dates[0] as string, dates[dates.length - 1] as string);
@@ -137,28 +204,7 @@ export function scheduleViews(ctx: ViewCtx): {
     const nav = (d: string, label: string): HTMLElement => h('a', { className: 'btn', href: `#/schedule/${mode}/${d}` }, label);
 
     const title = mode === 'day' ? `${date}(${weekdayLabel(date)})` : `${dates[0]} – ${dates[6]}`;
-    const gcal = await fetchGcalStatus();
-    const gcalLine = h('div', { className: 'muted gcal-line' });
-    const paintGcal = (g: GcalStatus | null): void => {
-      gcalLine.replaceChildren(
-        g === null
-          ? (STATIC_MODE ? 'Google 行事曆同步:純本機版無法使用,請在自己的電腦執行 npm start' : 'Google 行事曆:無法取得狀態(離線或服務未啟動)')
-          : !g.enabled
-            ? `Google 行事曆同步:未啟用${g.reason ? `(${g.reason})` : ''}`
-            : `Google 行事曆同步:已啟用(隱私等級 ${g.privacy === 'full' ? '完整' : '最小'})${g.last_run_at ? `;上次 ${g.last_run_at.slice(0, 16).replace('T', ' ')} ${g.last_ok ? '成功' : `失敗:${g.last_error ?? ''}`}` : ''}`,
-        g?.enabled ? h('button', { className: 'chip', onclick: () => void syncGcal() }, '立即同步 Google') : '',
-      );
-    };
-    const syncGcal = async (): Promise<void> => {
-      try {
-        await fetch('/api/gcal/sync', { method: 'POST', signal: AbortSignal.timeout(60_000) });
-        await ctx.doSync();
-        await ctx.render();
-      } catch {
-        msg.replaceChildren(ctx.errorBox('無法連線到伺服器,Google 行事曆同步未執行'));
-      }
-    };
-    paintGcal(gcal);
+    const gcalEl = gcalCard(await fetchGcalStatus(), msg);
 
     const sections = dates.map((d) => {
       const day = appointmentsOn(all, d, true);
@@ -184,8 +230,8 @@ export function scheduleViews(ctx: ViewCtx): {
           h('div', { className: 'seg' },
             h('a', { className: `btn${mode === 'day' ? ' on' : ''}`, href: `#/schedule/day/${date}` }, '日'),
             h('a', { className: `btn${mode === 'week' ? ' on' : ''}`, href: `#/schedule/week/${date}` }, '週')),
-          h('a', { className: 'btn primary', href: `#/schedule/new/${mode === 'day' ? date : todayTaipei()}` }, '＋ 新增行程')),
-        gcalLine),
+          h('a', { className: 'btn primary', href: `#/schedule/new/${mode === 'day' ? date : todayTaipei()}` }, '＋ 新增行程'))),
+      gcalEl,
       msg,
       ...sections,
       mode === 'day' ? routeHint(appointmentsOn(all, date), patients) : null,

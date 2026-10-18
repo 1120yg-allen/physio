@@ -101,17 +101,15 @@ npm run typecheck
 - 同日有 2 個以上行程時,顯示**地址排序提示**(縣市 → 區 → 路 → 門牌)。僅供參考,不是路線規劃。
 - 時間重疊的行程會標示警示。
 
-**Google 行事曆雙向同步**(預設關閉,需一次性設定;資料只在你的電腦與你的 Google 帳號之間流動):
+**Google 行事曆雙向同步**(預設關閉;資料只在你的電腦與你的 Google 帳號之間流動)。**全部在畫面上操作,不用打指令:**
 
-1. 到 [Google Cloud Console](https://console.cloud.google.com/) 建立專案 → 啟用「Google Calendar API」→「OAuth 同意畫面」(外部、測試中,把你自己的 Gmail 加為測試使用者)→「憑證」建立 **OAuth 用戶端 ID,類型選「電腦版應用程式」**。
-2. 設定環境變數後授權(會開出網址,用瀏覽器同意;並自動建立專用行事曆「居家物治排程」):
-   ```bash
-   export GCAL_CLIENT_ID=你的用戶端ID
-   export GCAL_CLIENT_SECRET=你的用戶端密鑰
-   npm run gcal:auth
-   npm start        # 之後每次啟動都要帶上述兩個環境變數
-   ```
-3. 啟動後每 5 分鐘自動同步,裝置送來行程變更時也會立即同步;排程頁可按「立即同步 Google」。iPhone 把該 Google 帳號加入行事曆,即可在 Apple 行事曆看到。
+1. 在**執行伺服器的那台電腦**上,用瀏覽器開 `http://127.0.0.1:8787` → 上方「排程」分頁 → 「Google 行事曆」卡片。
+2. 第一次需要 Google 的「用戶端 ID」與「密鑰」(卡片裡有逐步說明,約 5 分鐘):到 [Google Cloud Console](https://console.cloud.google.com/) 建立專案 → 啟用 Google Calendar API →「OAuth 同意畫面」(外部、測試中,把你自己的 Gmail 加為測試使用者)→「憑證」建立 **OAuth 用戶端 ID,類型選「電腦版應用程式」**。把 ID 與密鑰貼到卡片並按「儲存」。
+3. 按 **「🔗 連結 Google 帳號」** → 前往 Google 登入並同意 → 自動導回並建立專用行事曆「居家物治排程」,隨即開始同步。
+4. 之後每 5 分鐘自動同步,裝置送來行程變更時也會立即同步;卡片上有「立即同步 Google」與「中斷連結」。iPhone 把該 Google 帳號加入行事曆,即可在 Apple 行事曆看到。
+
+> Google 授權只能在**跑伺服器的那台電腦**上完成(回呼網址是 `127.0.0.1`)。從 iPad、手機或 Tailscale 網址開啟時按鈕會提醒你換到本機。
+> 用戶端 ID/密鑰存在資料目錄的 `gcal-client.json`(權限 600);也可改用環境變數 `GCAL_CLIENT_ID` / `GCAL_CLIENT_SECRET`(優先)。終端機版仍可用:`npm run gcal:auth`。
 
 同步規則:
 - 只同步專用行事曆,**讀不到你其他行事曆**(授權範圍僅 `calendar.app.created`)。授權檔 `gcal-token.json` 在資料目錄內,權限 600。
