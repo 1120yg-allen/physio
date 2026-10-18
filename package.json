@@ -1,0 +1,25 @@
+{
+  "name": "physio",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "居家物理治療臨床管理系統(local-first PWA)",
+  "engines": { "node": ">=22.13" },
+  "scripts": {
+    "dev": "node scripts/dev.mjs",
+    "build": "tsc --noEmit && vite build",
+    "start": "tsx src/server/index.ts",
+    "backup": "tsx src/server/cli.ts backup",
+    "restore": "tsx src/server/cli.ts restore",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "fake-indexeddb": "^6.0.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.0",
+    "vite": "^6.0.0",
+    "vitest": "^2.1.0"
+  }
+}
