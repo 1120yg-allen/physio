@@ -36,7 +36,7 @@ export interface SyncResponse {
 }
 
 /** 套用順序:被參照的資料先到(個案 → 字典 → 服務 → 內容)。 */
-const ORDER: readonly TableName[] = ['patients', 'tests', 'exercises', 'goals', 'favorites', 'encounters', 'soap_notes', 'ltc_records', 'appointments', 'line_messages'];
+const ORDER: readonly TableName[] = ['patients', 'tests', 'exercises', 'goals', 'favorites', 'ltc_contracts', 'ltc_staff', 'ltc_plans', 'ltc_quotas', 'ltc_suspensions', 'encounters', 'soap_notes', 'ltc_records', 'appointments', 'line_messages'];
 
 function rowId(row: unknown): string {
   if (typeof row === 'object' && row !== null && 'id' in row && typeof (row as { id: unknown }).id === 'string') {

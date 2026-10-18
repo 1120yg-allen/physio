@@ -4,6 +4,8 @@
 // 規格外新增的欄位(僅為同步與稽核基礎設施,不改變規格欄位語意):
 //   - encounters / soap_notes / ltc_records / 字典表 的 created_at、updated_at
 //   - soap_notes / ltc_records 的 encounter_id(實現「1:1 對應 Encounter」)
+//   - ltc_contracts / ltc_staff / ltc_plans / ltc_quotas / ltc_suspensions(長照核銷預檢所需資料;規格 §4.2 要求檢查但 §2 未定義資料表)
+//   - patients.history_note、ltc_records.staff_id
 //   - line_messages 整張表(LINE 外送佇列)
 //   - appointments 整張表(排程;規格 §5 需要但 §2 未定義)
 //   - exercises 的 category(介入類別)
@@ -45,6 +47,8 @@ export interface Patient {
   referral_doc: ReferralDoc | null;
   referral_required: boolean;
   precautions: string | null;
+  /** 歷史備註:匯入時無法結構化的原文(規格外新增,P5) */
+  history_note: string | null;
   created_at: string;
   updated_at: string;
   archived_at: string | null;
@@ -88,6 +92,8 @@ export interface LtcRecord {
   id: string;
   encounter_id: string;
   care_goal_id: string | null;
+  /** 服務人員(規格外新增:預檢「人員資格」需要) */
+  staff_id: string | null;
   executed_content: string | null;
   completion: string | null;
   feedback: string | null;
@@ -195,6 +201,67 @@ export interface LineMessage {
   updated_at: string;
 }
 
+export type PlanStatus = 'active' | 'closed_early' | 'moved';
+
+/** 特約有效期間(預檢 #2)。規格 §2 未定義,為核銷預檢新增 */
+export interface LtcContract {
+  id: string;
+  name: string;
+  start_date: string;
+  end_date: string;
+  created_at: string;
+  updated_at: string;
+}
+
+/** 服務人員資格(預檢 #3):長照 Level 與證照有效期間 */
+export interface LtcStaff {
+  id: string;
+  name: string;
+  profession: string;
+  ltc_level: number;
+  valid_from: string;
+  valid_to: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+/** 照顧計畫(預檢 #4)與中途結案/移居(預檢 #8、FA400) */
+export interface LtcPlan {
+  id: string;
+  patient_id: string;
+  start_date: string;
+  end_date: string;
+  status: PlanStatus;
+  closed_at: string | null;
+  /** 已在照管系統完成 FA400 提前結案設定的日期 */
+  fa400_done_at: string | null;
+  note: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+/** 個案當月分配額度(預檢 #1):某申報年月、某服務代碼可申報的次數 */
+export interface LtcQuota {
+  id: string;
+  patient_id: string;
+  quota_month: string;
+  service_code: string;
+  allowed_count: number;
+  created_at: string;
+  updated_at: string;
+}
+
+/** 暫停服務區間(預檢 #5) */
+export interface LtcSuspension {
+  id: string;
+  patient_id: string;
+  start_date: string;
+  end_date: string;
+  reason: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface TableRows {
   patients: Patient;
   encounters: Encounter;
@@ -206,6 +273,11 @@ export interface TableRows {
   favorites: Favorite;
   appointments: Appointment;
   line_messages: LineMessage;
+  ltc_contracts: LtcContract;
+  ltc_staff: LtcStaff;
+  ltc_plans: LtcPlan;
+  ltc_quotas: LtcQuota;
+  ltc_suspensions: LtcSuspension;
 }
 
 export type TableName = keyof TableRows;
@@ -251,6 +323,7 @@ export const TABLES: readonly TableDef[] = [
       { name: 'referral_doc', type: 'json' },
       { name: 'referral_required', type: 'bool', required: true },
       { name: 'precautions', type: 'text' },
+      { name: 'history_note', type: 'text' },
       ...ts,
       { name: 'archived_at', type: 'text' },
     ],
@@ -295,6 +368,7 @@ export const TABLES: readonly TableDef[] = [
       { name: 'id', type: 'text', required: true },
       { name: 'encounter_id', type: 'text', required: true },
       { name: 'care_goal_id', type: 'text' },
+      { name: 'staff_id', type: 'text' },
       { name: 'executed_content', type: 'text' },
       { name: 'completion', type: 'text' },
       { name: 'feedback', type: 'text' },
@@ -373,6 +447,67 @@ export const TABLES: readonly TableDef[] = [
       { name: 'status_detail', type: 'text' },
       { name: 'attempts', type: 'integer', required: true, min: 0 },
       { name: 'sent_at', type: 'text' },
+      ...ts,
+    ],
+  },
+  {
+    name: 'ltc_contracts',
+    columns: [
+      { name: 'id', type: 'text', required: true },
+      { name: 'name', type: 'text', required: true },
+      { name: 'start_date', type: 'text', required: true },
+      { name: 'end_date', type: 'text', required: true },
+      ...ts,
+    ],
+  },
+  {
+    name: 'ltc_staff',
+    columns: [
+      { name: 'id', type: 'text', required: true },
+      { name: 'name', type: 'text', required: true },
+      { name: 'profession', type: 'text', required: true },
+      { name: 'ltc_level', type: 'integer', required: true, min: 1, max: 3 },
+      { name: 'valid_from', type: 'text', required: true },
+      { name: 'valid_to', type: 'text' },
+      ...ts,
+    ],
+  },
+  {
+    name: 'ltc_plans',
+    indexes: ['patient_id'],
+    columns: [
+      { name: 'id', type: 'text', required: true },
+      { name: 'patient_id', type: 'text', required: true },
+      { name: 'start_date', type: 'text', required: true },
+      { name: 'end_date', type: 'text', required: true },
+      { name: 'status', type: 'text', required: true, enum: ['active', 'closed_early', 'moved'] },
+      { name: 'closed_at', type: 'text' },
+      { name: 'fa400_done_at', type: 'text' },
+      { name: 'note', type: 'text' },
+      ...ts,
+    ],
+  },
+  {
+    name: 'ltc_quotas',
+    indexes: ['patient_id'],
+    columns: [
+      { name: 'id', type: 'text', required: true },
+      { name: 'patient_id', type: 'text', required: true },
+      { name: 'quota_month', type: 'text', required: true },
+      { name: 'service_code', type: 'text', required: true },
+      { name: 'allowed_count', type: 'integer', required: true, min: 0 },
+      ...ts,
+    ],
+  },
+  {
+    name: 'ltc_suspensions',
+    indexes: ['patient_id'],
+    columns: [
+      { name: 'id', type: 'text', required: true },
+      { name: 'patient_id', type: 'text', required: true },
+      { name: 'start_date', type: 'text', required: true },
+      { name: 'end_date', type: 'text', required: true },
+      { name: 'reason', type: 'text' },
       ...ts,
     ],
   },

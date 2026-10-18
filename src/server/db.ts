@@ -134,6 +134,29 @@ const MIGRATIONS: readonly Migration[] = [
       'CREATE TABLE IF NOT EXISTS line_sent_keys (key TEXT PRIMARY KEY, sent_at TEXT NOT NULL)',
     ],
   },
+  {
+    version: 6,
+    name: '長照核銷:預檢資料表、patients.history_note、ltc_records.staff_id,並放寬長照紀錄的申報狀態更新',
+    sql: [
+      ...(['ltc_contracts', 'ltc_staff', 'ltc_plans', 'ltc_quotas', 'ltc_suspensions'] as const).map((t) => createTableSql(t)),
+      ...(['ltc_plans', 'ltc_quotas', 'ltc_suspensions'] as const).map((t) => `CREATE INDEX IF NOT EXISTS idx_${t}_patient_id ON ${t}(patient_id)`),
+      // 簽章後內容仍鎖定;僅「申報狀態(submission_status)」可在服務已送出後更新(與 updated_at、server_seq 之外的欄位須維持不變)
+      'DROP TRIGGER IF EXISTS trg_ltc_records_locked_update',
+      // upsert(INSERT … ON CONFLICT DO UPDATE)會先觸發 INSERT 觸發器;只擋「真正新增」的列,更新交給 UPDATE 觸發器判斷
+      'DROP TRIGGER IF EXISTS trg_ltc_records_locked_insert',
+      `CREATE TRIGGER trg_ltc_records_locked_insert BEFORE INSERT ON ltc_records
+         WHEN NOT EXISTS (SELECT 1 FROM ltc_records r WHERE r.id = NEW.id)
+              AND EXISTS (SELECT 1 FROM encounters e WHERE e.id = NEW.encounter_id AND e.signed_at IS NOT NULL
+                            AND julianday(NEW.updated_at) > julianday(e.signed_at))
+         BEGIN SELECT RAISE(ABORT, '已簽章紀錄不可新增內容'); END`,
+      `CREATE TRIGGER trg_ltc_records_locked_update BEFORE UPDATE ON ltc_records
+         WHEN EXISTS (SELECT 1 FROM encounters e WHERE e.id = OLD.encounter_id AND e.signed_at IS NOT NULL
+                        AND julianday(NEW.updated_at) > julianday(e.signed_at))
+              AND (${tableDef('ltc_records').columns.filter((c) => !['submission_status', 'updated_at'].includes(c.name)).map((c) => `OLD.${c.name} IS NOT NEW.${c.name}`).join(' OR ')})
+         BEGIN SELECT RAISE(ABORT, '已簽章紀錄不可修改'); END`,
+    ],
+    run: (db) => ensureColumns(db),
+  },
 ];
 
 function toSql(c: ColumnDef, v: unknown): SQLInputValue {

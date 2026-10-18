@@ -126,3 +126,20 @@ nav.tabs a.on { background: var(--brand); color: #fff; }
 .bindcode { font-size: 40px; font-weight: 800; letter-spacing: .25em; text-align: center; padding: 12px; background: #e3eef2; border-radius: 14px; margin: 12px 0; font-variant-numeric: tabular-nums; }
 .static-banner { font-size: 15px; }
 .static-banner b { display: inline; margin-right: 6px; }
+
+/* 長照核銷 */
+.issue { padding: 8px 12px; border-radius: 10px; margin: 6px 0; font-size: 16px; }
+.issue.error { background: #fde7e5; color: var(--danger); }
+.issue.warn { background: var(--warn-bg); color: var(--warn-ink); }
+.issue.notice { background: #e3eef2; color: var(--sub); }
+.steps { list-style: none; padding: 0; display: flex; flex-wrap: wrap; gap: 6px; }
+.steps li { padding: 4px 10px; border-radius: 999px; background: #eef3f5; color: var(--sub); font-size: 14px; }
+.steps li.done { background: #d6f2e1; color: var(--ok); }
+.steps li.cur { background: var(--brand); color: #fff; font-weight: 700; }
+table.tbl { width: 100%; border-collapse: collapse; font-size: 16px; }
+table.tbl th, table.tbl td { text-align: left; padding: 8px 6px; border-bottom: 1px solid var(--line); vertical-align: top; }
+table.tbl th { color: var(--sub); font-weight: 600; font-size: 14px; }
+.bar-meter { height: 10px; background: #e3eef2; border-radius: 6px; overflow: hidden; min-width: 80px; }
+.bar-meter > span { display: block; height: 100%; background: var(--brand); }
+.bar-meter.hot > span { background: #d97706; }
+.bar-meter.full > span { background: var(--danger); }

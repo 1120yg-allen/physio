@@ -7,9 +7,11 @@ import { SEED_EXERCISES, SEED_TESTS } from './seed';
 import type { FamilyInput, TrendPt } from './family';
 import { addDays, appointmentsOn, dateOf, makeIso, timeOf } from './schedule';
 import { trendFor } from './trend';
+import { blockedIds, canCorrect, canTransition, ltcMissingFields, nextMonth, monthOf, precheck, type LtcContext, type LtcItem, type PrecheckIssue } from './ltc';
+import type { TableRows } from './schema';
 import type { Appointment, Encounter, EncounterTrack, Exercise, Favorite, Goal, LineMessage, LineMessageKind, LtcRecord, Location, Patient, SoapNote, TestDef } from './schema';
 import { emptySoap, parseSoap, pickPreviousEncounter, prefillFromPrevious, serializeSoap, soapMissing, type SoapContent } from './soap';
-import { nowTaipei, toTaipeiIso } from './time';
+import { nowTaipei, todayTaipei, toTaipeiIso } from './time';
 import { DomainError } from './validate';
 
 export interface ServiceDeps {
@@ -40,6 +42,8 @@ export interface NewEncounterInput {
 export type EncounterPatch = Partial<
   Pick<Encounter, 'service_date' | 'start_time' | 'end_time' | 'service_code' | 'location' | 'no_show' | 'no_show_photo' | 'gps'>
 >;
+
+type LtcTable = 'ltc_contracts' | 'ltc_staff' | 'ltc_plans' | 'ltc_quotas' | 'ltc_suspensions';
 
 export class DataService {
   private readonly repo: Repo;
@@ -72,6 +76,7 @@ export class DataService {
       referral_doc: input.referral_doc ?? null,
       referral_required: input.referral_required,
       precautions: input.precautions ?? null,
+      history_note: input.history_note ?? null,
       created_at: t,
       updated_at: t,
       archived_at: null,
@@ -178,7 +183,7 @@ export class DataService {
   /** 儲存長照申報紀錄(1:1,有則更新)。已簽章拒絕。 */
   async saveLtcRecord(
     encounterId: string,
-    content: Pick<LtcRecord, 'care_goal_id' | 'executed_content' | 'completion' | 'feedback' | 'quota_month'>,
+    content: Pick<LtcRecord, 'care_goal_id' | 'staff_id' | 'executed_content' | 'completion' | 'feedback' | 'quota_month'>,
   ): Promise<LtcRecord> {
     const enc = await this.mustGetEncounter(encounterId);
     this.assertEditable(enc);
@@ -188,6 +193,7 @@ export class DataService {
       id: cur?.id ?? this.newId(),
       encounter_id: encounterId,
       ...content,
+      staff_id: content.staff_id,
       submission_status: cur?.submission_status ?? 0,
       created_at: cur?.created_at ?? t,
       updated_at: cur ? this.laterThan(cur.updated_at) : t,
@@ -209,6 +215,10 @@ export class DataService {
       if (e instanceof Rejection) throw new DomainError(e.reject, e.message);
       throw e;
     }
+    if (this.enforceContent && cur.track === 'ltc') {
+      const miss = ltcMissingFields(cur, await this.repo.getByEncounter('ltc_records', cur.id));
+      if (miss.length > 0) throw new DomainError('incomplete', `簽章前請先填寫:${miss.join('、')}`);
+    }
     if (this.enforceContent && cur.track === 'self_pay') {
       const missing = soapMissing(parseSoap(await this.repo.getByEncounter('soap_notes', cur.id)));
       if (missing.length > 0) throw new DomainError('incomplete', `簽章前請先填寫:${missing.join('、')}`);
@@ -227,7 +237,10 @@ export class DataService {
     const prev = await this.mustGetEncounter(id);
     if (prev.signed_at === null) throw new DomainError('conflict', '草稿可直接修改,不需建立新版本');
     if (prev.status === 'submitted') {
-      throw new DomainError('conflict', '已送出申報的紀錄須依申報流程處理,不可直接建立新版本');
+      const lr = prev.track === 'ltc' ? await this.repo.getByEncounter('ltc_records', prev.id) : null;
+      if (!lr || !canCorrect(lr.submission_status)) {
+        throw new DomainError('conflict', '已送出申報的紀錄僅在狀態 1(待通知收件)可修正;狀態 2 之後須洽縣市承辦退件');
+      }
     }
     if (await this.repo.getSuperseder(prev.id)) {
       throw new DomainError('fork', '此版本已有後續版本,請修改最新版本');
@@ -251,7 +264,7 @@ export class DataService {
     }
     const ltc = await this.repo.getByEncounter('ltc_records', prev.id);
     if (ltc) {
-      await acceptRowOrThrow(this.repo, 'ltc_records', { ...ltc, id: this.newId(), encounter_id: next.id, created_at: t, updated_at: t });
+      await acceptRowOrThrow(this.repo, 'ltc_records', { ...ltc, id: this.newId(), encounter_id: next.id, submission_status: 0, created_at: t, updated_at: t });
     }
     return next;
   }
@@ -544,6 +557,111 @@ export class DataService {
       trends,
       nextAppointment: upcoming ? { date: dateOf(upcoming.start_at), time: timeOf(upcoming.start_at) } : null,
     };
+  }
+
+  // ───────────── 長照核銷 ─────────────
+
+  /** 新增長照設定資料(特約、人員、計畫、額度、暫停);規則檢查與簽章資料相同,在 acceptRow 內 */
+  async createLtc<K extends LtcTable>(table: K, data: Omit<TableRows[K], 'id' | 'created_at' | 'updated_at'>): Promise<TableRows[K]> {
+    const t = this.now();
+    const row = { ...data, id: this.newId(), created_at: t, updated_at: t } as unknown as TableRows[K];
+    await acceptRowOrThrow(this.repo, table, row);
+    return row;
+  }
+
+  async updateLtc<K extends LtcTable>(table: K, id: string, patch: Partial<Omit<TableRows[K], 'id' | 'created_at' | 'updated_at'>>): Promise<TableRows[K]> {
+    const cur = await this.repo.get(table, id);
+    if (!cur) throw new DomainError('not_found', '找不到資料');
+    const row = { ...cur, ...patch, updated_at: this.laterThan((cur as { updated_at: string }).updated_at) } as unknown as TableRows[K];
+    await acceptRowOrThrow(this.repo, table, row);
+    return row;
+  }
+
+  listLtc<K extends LtcTable>(table: K): Promise<TableRows[K][]> {
+    return this.repo.list(table);
+  }
+
+  /** 標記中途結案/移居(之後須在照管系統完成 FA400) */
+  closePlan(planId: string, status: 'closed_early' | 'moved', closedAt: string): Promise<TableRows['ltc_plans']> {
+    return this.updateLtc('ltc_plans', planId, { status, closed_at: closedAt });
+  }
+
+  /** 記錄已在照管系統完成 FA400 提前結案設定 */
+  markFa400Done(planId: string, date: string): Promise<TableRows['ltc_plans']> {
+    return this.updateLtc('ltc_plans', planId, { fa400_done_at: date });
+  }
+
+  /** 全部長照服務(各版本鏈只取最新版)與其申報紀錄 */
+  async ltcItems(): Promise<LtcItem[]> {
+    const all = await this.repo.list('encounters');
+    const superseded = new Set(all.map((e) => e.supersedes_id).filter((x): x is string => x !== null));
+    const items: LtcItem[] = [];
+    for (const e of all) {
+      if (e.track !== 'ltc' || superseded.has(e.id)) continue;
+      items.push({ encounter: e, record: await this.repo.getByEncounter('ltc_records', e.id) });
+    }
+    return items.sort((a, b) => a.encounter.service_date.localeCompare(b.encounter.service_date) || a.encounter.start_time.localeCompare(b.encounter.start_time));
+  }
+
+  async ltcContext(): Promise<LtcContext> {
+    return {
+      contracts: await this.repo.list('ltc_contracts'),
+      staff: await this.repo.list('ltc_staff'),
+      plans: await this.repo.list('ltc_plans'),
+      quotas: await this.repo.list('ltc_quotas'),
+      suspensions: await this.repo.list('ltc_suspensions'),
+      patients: await this.repo.list('patients'),
+    };
+  }
+
+  /**
+   * 核銷預檢:候選 = 已簽章、尚未送出的長照紀錄(最新版);已送出者計入額度與重複判斷。
+   * encounterIds 有值時只檢查指定紀錄。
+   */
+  async runPrecheck(opts: { today?: string; encounterIds?: string[] } = {}): Promise<{ issues: PrecheckIssue[]; candidates: LtcItem[] }> {
+    const items = await this.ltcItems();
+    const ids = opts.encounterIds ? new Set(opts.encounterIds) : null;
+    const all = items.filter((i) => i.encounter.status === 'signed');
+    const submitted = items.filter((i) => i.encounter.status === 'submitted');
+    // 額度與重複判斷一律以「全部待上傳紀錄」一起計算(依服務日期先後分配額度),再只回報被選取的那幾筆;
+    // 否則單獨檢查第 3 筆時會漏算前兩筆而誤判通過
+    const issues = precheck({ today: opts.today ?? todayTaipei(), candidates: all, submitted, context: await this.ltcContext() });
+    return ids ? { issues: issues.filter((i) => i.encounter_id === null || ids.has(i.encounter_id)), candidates: all.filter((i) => ids.has(i.encounter.id)) } : { issues, candidates: all };
+  }
+
+  /**
+   * 標記為「已上傳 FA100」:預檢有任何錯誤即拒絕(上傳後才發現錯誤,一筆就燒掉半天)。
+   * 成功後服務狀態轉為 submitted,申報狀態從 0(待審核)開始追蹤。
+   */
+  async markSubmitted(encounterIds: string[], today?: string): Promise<Encounter[]> {
+    const { issues, candidates } = await this.runPrecheck({ today, encounterIds });
+    if (candidates.length !== encounterIds.length) throw new DomainError('conflict', '只有已簽章、尚未送出的長照紀錄可以上傳');
+    const blocked = blockedIds(issues);
+    if (blocked.size > 0) throw new DomainError('precheck_failed', `預檢未通過:${blocked.size} 筆有錯誤,請先修正再上傳`);
+    const out: Encounter[] = [];
+    for (const c of candidates) {
+      const row: Encounter = { ...c.encounter, status: 'submitted', updated_at: this.laterThan(c.encounter.updated_at) };
+      await acceptRowOrThrow(this.repo, 'encounters', row);
+      out.push(row);
+    }
+    return out;
+  }
+
+  /** 記錄照管系統的申報狀態(0→…→6 只能前進一格;退件 2–5 → 1) */
+  async advanceSubmission(encounterId: string, to: number): Promise<LtcRecord> {
+    const enc = await this.mustGetEncounter(encounterId);
+    const rec = await this.repo.getByEncounter('ltc_records', encounterId);
+    if (!rec) throw new DomainError('not_found', '找不到長照申報紀錄');
+    if (enc.status !== 'submitted') throw new DomainError('conflict', '請先送出申報,才能記錄申報狀態');
+    if (!canTransition(rec.submission_status, to)) throw new DomainError('invalid', '申報狀態只能前進一格;退件(狀態 2–5)才可回到 1');
+    const row: LtcRecord = { ...rec, submission_status: to, updated_at: this.laterThan(rec.updated_at) };
+    await acceptRowOrThrow(this.repo, 'ltc_records', row);
+    return row;
+  }
+
+  /** 預設申報年月:服務年月的次月 */
+  defaultQuotaMonth(serviceDate: string): string {
+    return nextMonth(monthOf(serviceDate));
   }
 
   // ───────────── 字典表、目標、常用清單 ─────────────

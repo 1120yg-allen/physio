@@ -2,6 +2,7 @@
 // 因此「簽章後鎖定」「版本不分叉」在兩端皆被強制(CLAUDE.md C2、C3)。
 import type { Repo } from './repo';
 import type { Appointment, Encounter, LineMessage, LtcRecord, Patient, SoapNote, TableName, TableRows } from './schema';
+import { canCorrect, canTransition } from './ltc';
 import { compareIso } from './time';
 import { DomainError, normalizeRow, rowsEqual, validateShape } from './validate';
 
@@ -67,6 +68,12 @@ async function checkTable<T extends TableName>(
       return checkNote(repo, 'soap_notes', row as SoapNote, existing as SoapNote | null);
     case 'ltc_records':
       return checkNote(repo, 'ltc_records', row as LtcRecord, existing as LtcRecord | null);
+    case 'ltc_contracts':
+    case 'ltc_staff':
+    case 'ltc_plans':
+    case 'ltc_quotas':
+    case 'ltc_suspensions':
+      return checkLtcSupport(repo, table, row as unknown as Record<string, unknown> & { updated_at: string; created_at: string }, existing as unknown as { updated_at: string; created_at: string } | null);
     case 'line_messages':
       return checkLineMessage(repo, row as LineMessage, existing as LineMessage | null);
     case 'appointments':
@@ -93,6 +100,48 @@ function checkPatient(row: Patient, existing: Patient | null): void {
     throw new Rejection('invalid', '長照個案須填寫長照需要等級');
   }
   checkLww(row, existing);
+}
+
+const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+const MONTH_RE = /^\d{4}-\d{2}$/;
+
+/** 長照核銷預檢所需的設定資料:日期格式、起訖順序、個案存在、計畫結案欄位一致 */
+async function checkLtcSupport(
+  repo: Repo,
+  table: 'ltc_contracts' | 'ltc_staff' | 'ltc_plans' | 'ltc_quotas' | 'ltc_suspensions',
+  row: Record<string, unknown> & { updated_at: string; created_at: string },
+  existing: { updated_at: string; created_at: string } | null,
+): Promise<void> {
+  const date = (k: string, optional = false): void => {
+    const v = row[k];
+    if (v === null || v === undefined) {
+      if (!optional) throw new Rejection('invalid', `${k} 必填`);
+      return;
+    }
+    if (typeof v !== 'string' || !DATE_RE.test(v) || Number.isNaN(Date.parse(`${v}T00:00:00Z`))) throw new Rejection('invalid', `${k} 日期格式須為 YYYY-MM-DD`);
+  };
+  if (table !== 'ltc_quotas' && table !== 'ltc_staff') {
+    date('start_date');
+    date('end_date');
+    if ((row.end_date as string) < (row.start_date as string)) throw new Rejection('invalid', '結束日期不可早於開始日期');
+  }
+  if (table === 'ltc_staff') {
+    date('valid_from');
+    date('valid_to', true);
+    if (row.valid_to && (row.valid_to as string) < (row.valid_from as string)) throw new Rejection('invalid', '資格結束日期不可早於開始日期');
+  }
+  if (table === 'ltc_quotas' && !MONTH_RE.test(row.quota_month as string)) throw new Rejection('invalid', '申報年月格式須為 YYYY-MM');
+  if (table === 'ltc_plans' || table === 'ltc_quotas' || table === 'ltc_suspensions') {
+    if (!(await repo.get('patients', row.patient_id as string))) throw new Rejection('orphan', '所屬個案不存在');
+  }
+  if (table === 'ltc_plans') {
+    const closed = row.status !== 'active';
+    if (closed && !row.closed_at) throw new Rejection('invalid', '中途結案/移居須填結案日期');
+    if (!closed && (row.closed_at || row.fa400_done_at)) throw new Rejection('invalid', '進行中的計畫不可有結案日期或 FA400 完成日期');
+    date('closed_at', true);
+    date('fa400_done_at', true);
+  }
+  checkLww(row as { updated_at: string; created_at: string }, existing);
 }
 
 async function checkLineMessage(repo: Repo, row: LineMessage, existing: LineMessage | null): Promise<void> {
@@ -178,7 +227,13 @@ async function checkNewEncounter(repo: Repo, row: Encounter): Promise<void> {
   const prev = await repo.get('encounters', row.supersedes_id);
   if (!prev) throw new Rejection('orphan', '被取代的前一版本不存在');
   if (prev.signed_at === null) throw new Rejection('conflict', '只有已簽章的版本可被取代');
-  if (prev.status === 'submitted') throw new Rejection('conflict', '已送出申報的紀錄須依申報流程處理,不可直接建立新版本');
+  if (prev.status === 'submitted') {
+    // 已送出申報:僅長照紀錄在狀態 1(待通知收件)可修正;狀態 2 之後須洽縣市承辦退件
+    const lr = prev.track === 'ltc' ? await repo.getByEncounter('ltc_records', prev.id) : null;
+    if (!lr || !canCorrect(lr.submission_status)) {
+      throw new Rejection('conflict', '已送出申報的紀錄僅在狀態 1(待通知收件)可修正;狀態 2 之後須洽縣市承辦退件');
+    }
+  }
   if (row.version !== prev.version + 1) throw new Rejection('invalid', '版本號必須為前一版本 + 1');
   if (row.patient_id !== prev.patient_id || row.track !== prev.track) {
     throw new Rejection('conflict', '新版本的個案與軌別必須與前一版本相同');
@@ -213,6 +268,24 @@ async function checkNote<T extends 'soap_notes' | 'ltc_records'>(
   const sibling = await repo.getByEncounter(table, row.encounter_id);
   if (sibling && sibling.id !== row.id) throw new Rejection('conflict', '該服務已有對應紀錄(1:1)');
   if (existing && existing.encounter_id !== row.encounter_id) throw new Rejection('conflict', '紀錄不可改掛到其他服務');
+
+  if (table === 'ltc_records') {
+    const lr = row as unknown as LtcRecord;
+    if (lr.staff_id !== null && !(await repo.get('ltc_staff', lr.staff_id))) throw new Rejection('orphan', '服務人員資料不存在');
+    if (lr.quota_month !== null && !MONTH_RE.test(lr.quota_month)) throw new Rejection('invalid', '申報年月格式須為 YYYY-MM');
+    const ex = existing as unknown as LtcRecord | null;
+    // 申報狀態只有在服務已送出申報後才有意義;狀態轉換須符合狀態機
+    if (enc.status !== 'submitted' && lr.submission_status !== 0) throw new Rejection('invalid', '尚未送出申報的紀錄,申報狀態必須為 0');
+    if (ex && ex.submission_status !== lr.submission_status) {
+      if (enc.status !== 'submitted') throw new Rejection('conflict', '請先送出申報,才能記錄申報狀態');
+      if (!canTransition(ex.submission_status, lr.submission_status)) throw new Rejection('invalid', '申報狀態只能前進一格;退件(狀態 2–5)才可回到 1');
+      // 只允許改申報狀態(其餘內容仍受簽章鎖定)
+      const same = (a: LtcRecord, b: LtcRecord): boolean => rowsEqual({ ...a, submission_status: 0, updated_at: '' } as never, { ...b, submission_status: 0, updated_at: '' } as never);
+      if (!same(ex, lr)) throw new Rejection('locked', '紀錄已簽章鎖定,只能更新申報狀態');
+      if (compareIso(lr.updated_at, ex.updated_at) < 0) throw new Rejection('stale', '對方資料較新,未覆寫');
+      return;
+    }
+  }
 
   // C2:簽章後鎖定。離線時「寫內容 → 簽章」會一起同步,簽章在先、內容在後抵達;
   // 因此只接受簽章時間(含)之前完成的內容(updated_at ≤ signed_at),簽章之後的任何寫入一律拒絕。

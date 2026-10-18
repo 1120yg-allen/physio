@@ -12,7 +12,10 @@ import { backupView, lastBackupLabel } from './backup';
 import { IdbRepo, openPhysioDb } from './idb';
 import { soapForm, type FormMode } from './soapform';
 import { soapReadonly } from './soapview';
+import { ltcDraftForm, ltcLockedCard } from './ltcform';
+import { canCorrect } from '../shared/ltc';
 import { scheduleViews, type ViewCtx } from './schedule';
+import { ltcBanner, ltcViews } from './ltcview';
 import { encounterLineCard, patientLineCard, viewLibrary } from './linecard';
 import { httpTransport, runSync, type SyncOutcome } from './sync';
 
@@ -25,6 +28,7 @@ let repo: IdbRepo;
 let svc: DataService;
 let sched: ReturnType<typeof scheduleViews>;
 let viewCtx: ViewCtx;
+let ltc: ReturnType<typeof ltcViews>;
 const app = document.getElementById('app') as HTMLElement;
 
 // ───────────── 90 秒計時(TASKS 1.5):只存秒數與模式,不含任何個案資料 ─────────────
@@ -114,6 +118,7 @@ async function doSync(): Promise<void> {
 function layout(title: string, body: (Node | null)[], back?: string): void {
   const inSchedule = location.hash.startsWith('#/schedule');
   const inLibrary = location.hash.startsWith('#/library');
+  const inLtc = location.hash.startsWith('#/ltc');
   const nodes: (Node | null)[] = [
     h('header', { className: 'bar' },
       back ? h('a', { className: 'home btn', href: back }, '‹') : null,
@@ -122,7 +127,7 @@ function layout(title: string, body: (Node | null)[], back?: string): void {
       h('button', { onclick: () => void doSync() }, '同步'),
     ),
     STATIC_MODE ? h('div', { className: 'precautions static-banner' }, h('b', null, 'ℹ 純本機版'), `${STATIC_NOTICE} `, h('a', { href: '#/backup' }, '匯出備份'), `(${lastBackupLabel()})`) : null,
-    back ? null : h('nav', { className: 'tabs' }, h('a', { href: '#/', className: inSchedule || inLibrary ? '' : 'on' }, '個案'), h('a', { href: '#/schedule', className: inSchedule ? 'on' : '' }, '排程'), h('a', { href: '#/library', className: inLibrary ? 'on' : '' }, '動作庫')),
+    back ? null : h('nav', { className: 'tabs' }, h('a', { href: '#/', className: inSchedule || inLibrary || inLtc ? '' : 'on' }, '個案'), h('a', { href: '#/schedule', className: inSchedule ? 'on' : '' }, '排程'), h('a', { href: '#/ltc', className: inLtc ? 'on' : '' }, '長照核銷'), h('a', { href: '#/library', className: inLibrary ? 'on' : '' }, '動作庫')),
     ...body,
   ];
   app.replaceChildren(...nodes.filter((n): n is Node => n !== null));
@@ -143,6 +148,10 @@ async function render(): Promise<void> {
   editingView = false;
   const parts = location.hash.replace(/^#\/?/, '').split('/').filter(Boolean);
   try {
+    if (parts[0] === 'ltc') {
+      if (parts[1] === 'settings') return await ltc.viewLtcSettings(parts[2] ?? null);
+      return await ltc.viewLtc(parts[1] && /^\d{4}-\d{2}$/.test(parts[1]) ? parts[1] : null);
+    }
     if (parts[0] === 'backup') return await backupView(viewCtx, repo);
     if (parts[0] === 'library') return await viewLibrary(viewCtx);
     if (parts[0] === 'schedule') {
@@ -175,6 +184,7 @@ async function viewPatientList(query = '', includeArchived = false): Promise<voi
     h('div', { className: 'row' }, h('div', { className: 'grow' }, search), h('a', { className: 'btn primary', href: '#/patient/new' }, '＋ 新增個案')),
     h('label', { className: 'muted' }, archived, ' 顯示已結案'),
     timingSummary() ? h('p', { className: 'muted' }, timingSummary() as string) : null,
+    await ltcBanner(viewCtx),
     h('div', { className: 'card list' },
       list.length === 0 ? h('p', { className: 'muted' }, '尚無個案。按「新增個案」開始。') : null,
       list.map((p) =>
@@ -388,6 +398,7 @@ async function viewPatient(id: string): Promise<void> {
       canSelfPay ? null : msg,
       h('p', null, h('button', { className: 'primary', onclick: () => void create() }, '建立')),
     ),
+    p.track === 'self_pay' ? null : h('div', { className: 'card' }, h('h2', null, '長照'), h('p', { className: 'muted' }, '照顧計畫、分配額度、暫停區間與中途結案(FA400)在長照設定。'), h('a', { className: 'btn', href: `#/ltc/settings/${p.id}` }, '長照設定')),
     await patientLineCard(viewCtx, p),
     h('div', { className: 'card' },
       h('h2', null, '治療目標'),
@@ -484,13 +495,15 @@ async function viewEncounter(id: string): Promise<void> {
     }
   };
   const saveMeta = (): Promise<Encounter> =>
-    svc.updateEncounter(e.id, { service_date: date.value, start_time: start.value, end_time: end.value, location: (loc.value || null) as Location | null, service_code: code.value.trim() || null });
+    svc.updateEncounter(e.id, e.track === 'ltc'
+      ? { service_date: date.value, start_time: start.value, end_time: end.value } // 長照的代碼與地點在「長照申報紀錄」表單
+      : { service_date: date.value, start_time: start.value, end_time: end.value, location: (loc.value || null) as Location | null, service_code: code.value.trim() || null });
 
   const metaCard = h('details', { className: 'card', open: e.track === 'ltc' || locked || e.end_time <= e.start_time },
     h('summary', null, `服務時間與地點:${e.service_date} ${e.start_time}–${e.end_time}`),
-    h('div', { className: 'grid2' }, h('div', null, h('label', { className: 'f' }, '日期'), date), h('div', null, h('label', { className: 'f' }, '地點'), loc)),
+    h('div', { className: 'grid2' }, h('div', null, h('label', { className: 'f' }, '日期'), date), e.track === 'ltc' ? h('div') : h('div', null, h('label', { className: 'f' }, '地點'), loc)),
     h('div', { className: 'grid2' }, h('div', null, h('label', { className: 'f' }, '開始'), start), h('div', null, h('label', { className: 'f' }, '結束'), end)),
-    h('label', { className: 'f' }, '服務代碼'), code,
+    e.track === 'ltc' ? null : h('label', { className: 'f' }, '服務代碼'), e.track === 'ltc' ? null : code,
     locked || e.track !== 'self_pay' ? null : durationChips(start, end, prevDurationMinutes),
   );
 
@@ -508,7 +521,9 @@ async function viewEncounter(id: string): Promise<void> {
     ),
   );
 
-  const reviseBtn = locked && e.id === latest.id && e.status === 'signed'
+  const ltcRec = e.track === 'ltc' ? await svc.getLtcRecord(e.id) : null;
+  const canRevise = locked && e.id === latest.id && (e.status === 'signed' || (e.status === 'submitted' && e.track === 'ltc' && ltcRec !== null && canCorrect(ltcRec.submission_status)));
+  const reviseBtn = canRevise
     ? h('button', { className: 'primary', onclick: () => void run(async () => { const n = await svc.reviseEncounter(e.id); location.hash = `#/encounter/${n.id}`; }) }, '建立新版本以修改')
     : null;
 
@@ -518,7 +533,7 @@ async function viewEncounter(id: string): Promise<void> {
       precautionsBox(p, true),
       h('div', { className: 'card' }, statusRow, h('p', { className: 'muted' }, `已於 ${e.signed_at} 簽章鎖定,不可直接修改。如需更正請建立新版本,原版本會完整保留。`), msg, reviseBtn),
       metaCard,
-      e.track === 'self_pay' ? soapReadonly(await svc.getSoapContent(e.id), tests, exercises) : null,
+      e.track === 'self_pay' ? soapReadonly(await svc.getSoapContent(e.id), tests, exercises) : await ltcLockedCard(viewCtx, p, e, e.id === latest.id),
       await encounterLineCard(viewCtx, p, e),
       versionCard,
     ];
@@ -527,18 +542,19 @@ async function viewEncounter(id: string): Promise<void> {
     return;
   }
 
-  // ── 長照草稿(P3 前僅有時間欄位) ──
+  // ── 長照草稿 ──
   if (e.track !== 'self_pay') {
     editingView = true;
+    const lform = await ltcDraftForm(viewCtx, p, e);
     layout(`${p.name} ${e.service_date}`, [
       precautionsBox(p, true),
-      h('div', { className: 'card' }, statusRow, msg,
-        h('div', { className: 'row' },
-          h('button', { onclick: () => void run(async () => { await saveMeta(); await render(); }) }, '儲存草稿'),
-          h('button', { className: 'primary', onclick: () => void run(async () => { await saveMeta(); await svc.signEncounter(e.id); await render(); }) }, '簽章鎖定'))),
+      h('div', { className: 'card' }, statusRow, msg),
       metaCard,
-      h('p', { className: 'muted' }, '長照申報欄位將於 P3 加入。'),
+      lform.el,
       await encounterLineCard(viewCtx, p, e),
+      h('div', { className: 'sign-bar' },
+        h('button', { onclick: () => void run(async () => { await saveMeta(); await lform.save(); await render(); }) }, '儲存草稿'),
+        h('button', { className: 'primary', onclick: () => void run(async () => { await saveMeta(); await lform.save(); await svc.signEncounter(e.id); await render(); }) }, '簽章鎖定')),
       versionCard,
     ], `#/patient/${p.id}`);
     await refreshStatus();
@@ -647,6 +663,7 @@ async function main(): Promise<void> {
     refreshStatus,
   };
   sched = scheduleViews(viewCtx);
+  ltc = ltcViews(viewCtx);
 
   window.addEventListener('hashchange', () => void render());
   window.addEventListener('online', () => void doSync());

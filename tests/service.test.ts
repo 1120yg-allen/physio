@@ -195,7 +195,7 @@ describe.each(factories)('資料服務規則 — %s', (_name, make) => {
       const signed = await svc.signEncounter(e.id);
       const sub = await acceptRow(repo, 'encounters', { ...signed, status: 'submitted', updated_at: '2030-01-01T00:00:00.000+08:00' });
       expect(sub).toMatchObject({ applied: true });
-      await expect(svc.reviseEncounter(e.id)).rejects.toThrow('申報流程');
+      await expect(svc.reviseEncounter(e.id)).rejects.toThrow('僅在狀態 1');
       // 送出狀態同時改其他欄位 → 拒絕
       const bad = await acceptRow(repo, 'encounters', { ...signed, status: 'submitted', end_time: '23:00', updated_at: '2031-01-01T00:00:00.000+08:00' });
       expect(bad).toMatchObject({ applied: false });
@@ -212,7 +212,7 @@ describe.each(factories)('資料服務規則 — %s', (_name, make) => {
       const ltcEnc = await newEncounter(both.id, 'ltc');
       const spEnc = await newEncounter(both.id, 'self_pay');
       await expect(svc.saveSoapNote(ltcEnc.id, { subjective: null, objective: null, assessment: null, plan: null })).rejects.toThrow('只能掛在自費');
-      await expect(svc.saveLtcRecord(spEnc.id, { care_goal_id: null, executed_content: null, completion: null, feedback: null, quota_month: null })).rejects.toThrow('只能掛在長照');
+      await expect(svc.saveLtcRecord(spEnc.id, { care_goal_id: null, staff_id: null, executed_content: null, completion: null, feedback: null, quota_month: null })).rejects.toThrow('只能掛在長照');
     });
 
     it('服務軌別建立後不可更改', async () => {
