@@ -4,6 +4,7 @@
 // 規格外新增的欄位(僅為同步與稽核基礎設施,不改變規格欄位語意):
 //   - encounters / soap_notes / ltc_records / 字典表 的 created_at、updated_at
 //   - soap_notes / ltc_records 的 encounter_id(實現「1:1 對應 Encounter」)
+//   - appointments 整張表(排程;規格 §5 需要但 §2 未定義)
 //   - exercises 的 category(介入類別)
 //   - favorites 的 kind / ref_id / sort_order(規格僅描述「個人常用清單」)
 
@@ -143,6 +144,31 @@ export interface Favorite {
   updated_at: string;
 }
 
+export type AppointmentStatus = 'scheduled' | 'cancelled';
+
+/**
+ * 排程(SPEC §5)。規格 §2 未定義此表,為實現「本機排程表」新增。
+ * 取消以 status 表示(同步協定不支援刪除)。patient_id 為空表示從 Google 行事曆匯入、尚未指定個案的行程。
+ */
+export interface Appointment {
+  id: string;
+  patient_id: string | null;
+  /** 未指定個案時顯示用的標題(來自 Google 行事曆) */
+  title: string | null;
+  track: EncounterTrack;
+  /** ISO 8601 含時區,例 2026-10-20T14:00:00+08:00 */
+  start_at: string;
+  end_at: string;
+  /** 到宅地址(建立時由個案地址帶入,可改) */
+  location_text: string | null;
+  status: AppointmentStatus;
+  /** 由此行程開啟的服務紀錄 */
+  encounter_id: string | null;
+  note: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface TableRows {
   patients: Patient;
   encounters: Encounter;
@@ -152,6 +178,7 @@ export interface TableRows {
   exercises: Exercise;
   goals: Goal;
   favorites: Favorite;
+  appointments: Appointment;
 }
 
 export type TableName = keyof TableRows;
@@ -284,6 +311,23 @@ export const TABLES: readonly TableDef[] = [
       { name: 'target_value', type: 'real' },
       { name: 'deadline', type: 'text' },
       { name: 'test_id', type: 'text' },
+      ...ts,
+    ],
+  },
+  {
+    name: 'appointments',
+    indexes: ['patient_id', 'start_at'],
+    columns: [
+      { name: 'id', type: 'text', required: true },
+      { name: 'patient_id', type: 'text' },
+      { name: 'title', type: 'text' },
+      { name: 'track', type: 'text', required: true, enum: ['ltc', 'self_pay'] },
+      { name: 'start_at', type: 'text', required: true },
+      { name: 'end_at', type: 'text', required: true },
+      { name: 'location_text', type: 'text' },
+      { name: 'status', type: 'text', required: true, enum: ['scheduled', 'cancelled'] },
+      { name: 'encounter_id', type: 'text' },
+      { name: 'note', type: 'text' },
       ...ts,
     ],
   },

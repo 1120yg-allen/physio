@@ -105,3 +105,19 @@ input[type=checkbox] { width: 24px; min-height: 24px; }
 .ro dd { margin: 0; white-space: pre-wrap; }
 .saved { font-size: 14px; color: var(--ok); }
 @media (max-width: 520px) { .irow .dose { grid-template-columns: 1fr 1fr; } }
+
+/* 導覽與排程 */
+nav.tabs { display: flex; gap: 8px; margin-bottom: 4px; }
+nav.tabs a { flex: 1; text-align: center; padding: 10px; border-radius: 12px; text-decoration: none; color: var(--sub); background: #e3eef2; font-weight: 600; }
+nav.tabs a.on { background: var(--brand); color: #fff; }
+.appt { display: flex; gap: 14px; padding: 12px 0; border-bottom: 1px solid var(--line); }
+.appt:last-child { border-bottom: 0; }
+.appt.cancelled { opacity: .55; }
+.appt-time { min-width: 5.5em; font-weight: 700; font-variant-numeric: tabular-nums; }
+.appt-time .muted { display: block; font-weight: 400; }
+.appt-main { flex: 1; min-width: 0; }
+.appt-actions { margin-top: 8px; }
+.warn-text { color: var(--warn-ink); }
+.sched-title { font-size: 18px; }
+.gcal-line { margin-top: 8px; display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.seg a.btn.on { background: var(--brand); border-color: var(--brand); color: #fff; }

@@ -29,7 +29,7 @@ describe('SQLite schema(0.2)', () => {
     }
     const tables = (repo.db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all() as { name: string }[]).map((t) => t.name);
     for (const t of ['tests', 'exercises', 'goals', 'favorites']) expect(tables).toContain(t);
-    expect(TABLES.map((t) => t.name).sort()).toEqual(['encounters', 'exercises', 'favorites', 'goals', 'ltc_records', 'patients', 'soap_notes', 'tests']);
+    expect(TABLES.map((t) => t.name).sort()).toEqual(['appointments', 'encounters', 'exercises', 'favorites', 'goals', 'ltc_records', 'patients', 'soap_notes', 'tests']);
   });
 
   it('migration 可重跑且不重複套用', () => {
@@ -37,7 +37,7 @@ describe('SQLite schema(0.2)', () => {
     migrate(repo.db);
     migrate(repo.db);
     const n = repo.db.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get() as { n: number };
-    expect(Number(n.n)).toBe(3);
+    expect(Number(n.n)).toBe(4);
   });
 
   it('JSON、布林欄位來回轉換正確', async () => {

@@ -4,7 +4,8 @@
 import type { Repo } from './repo';
 import { acceptRowOrThrow, assertSignable, Rejection } from './rules';
 import { SEED_EXERCISES, SEED_TESTS } from './seed';
-import type { Encounter, EncounterTrack, Exercise, Favorite, Goal, LtcRecord, Location, Patient, SoapNote, TestDef } from './schema';
+import { appointmentsOn, dateOf, makeIso, timeOf } from './schedule';
+import type { Appointment, Encounter, EncounterTrack, Exercise, Favorite, Goal, LtcRecord, Location, Patient, SoapNote, TestDef } from './schema';
 import { emptySoap, parseSoap, pickPreviousEncounter, prefillFromPrevious, serializeSoap, soapMissing, type SoapContent } from './soap';
 import { nowTaipei, toTaipeiIso } from './time';
 import { DomainError } from './validate';
@@ -318,6 +319,124 @@ export class DataService {
     return { encounter: prev, content: await this.getSoapContent(prev.id) };
   }
 
+  // ───────────── 排程 ─────────────
+
+  /** 新增行程。到宅地址預設帶入個案地址。 */
+  async createAppointment(input: {
+    patient_id: string;
+    track: EncounterTrack;
+    date: string;
+    start: string;
+    end: string;
+    location_text?: string | null;
+    note?: string | null;
+  }): Promise<Appointment> {
+    const patient = await this.mustGetPatient(input.patient_id);
+    const t = this.now();
+    const row: Appointment = {
+      id: this.newId(),
+      patient_id: input.patient_id,
+      title: null,
+      track: input.track,
+      start_at: makeIso(input.date, input.start),
+      end_at: makeIso(input.date, input.end),
+      location_text: input.location_text === undefined ? patient.address : input.location_text,
+      status: 'scheduled',
+      encounter_id: null,
+      note: input.note ?? null,
+      created_at: t,
+      updated_at: t,
+    };
+    await acceptRowOrThrow(this.repo, 'appointments', row);
+    return row;
+  }
+
+  /** 修改行程(改期、改地點、指定個案…)。已連結服務紀錄的行程不可改個案。 */
+  async updateAppointment(
+    id: string,
+    patch: { patient_id?: string | null; track?: EncounterTrack; date?: string; start?: string; end?: string; location_text?: string | null; note?: string | null },
+  ): Promise<Appointment> {
+    const cur = await this.mustGetAppointment(id);
+    if (patch.patient_id !== undefined && patch.patient_id !== cur.patient_id && cur.encounter_id !== null) {
+      throw new DomainError('conflict', '行程已開啟服務紀錄,不可更換個案');
+    }
+    const date = patch.date ?? dateOf(cur.start_at);
+    const row: Appointment = {
+      ...cur,
+      patient_id: patch.patient_id === undefined ? cur.patient_id : patch.patient_id,
+      track: patch.track ?? cur.track,
+      start_at: makeIso(date, patch.start ?? timeOf(cur.start_at)),
+      end_at: makeIso(date, patch.end ?? timeOf(cur.end_at)),
+      location_text: patch.location_text === undefined ? cur.location_text : patch.location_text,
+      note: patch.note === undefined ? cur.note : patch.note,
+      updated_at: this.laterThan(cur.updated_at),
+    };
+    await acceptRowOrThrow(this.repo, 'appointments', row);
+    return row;
+  }
+
+  async cancelAppointment(id: string): Promise<Appointment> {
+    return this.setAppointmentStatus(id, 'cancelled');
+  }
+
+  async restoreAppointment(id: string): Promise<Appointment> {
+    return this.setAppointmentStatus(id, 'scheduled');
+  }
+
+  private async setAppointmentStatus(id: string, status: Appointment['status']): Promise<Appointment> {
+    const cur = await this.mustGetAppointment(id);
+    if (cur.status === status) return cur;
+    if (status === 'cancelled' && cur.encounter_id !== null) {
+      throw new DomainError('conflict', '行程已開啟服務紀錄,不可取消(病歷依法保存)');
+    }
+    const row: Appointment = { ...cur, status, updated_at: this.laterThan(cur.updated_at) };
+    await acceptRowOrThrow(this.repo, 'appointments', row);
+    return row;
+  }
+
+  /** 日期區間(含)內的行程,含已取消者(由呼叫端決定是否顯示) */
+  async listAppointments(fromDate: string, toDate: string): Promise<Appointment[]> {
+    return (await this.repo.list('appointments'))
+      .filter((a) => {
+        const d = dateOf(a.start_at);
+        return d >= fromDate && d <= toDate;
+      })
+      .sort((a, b) => Date.parse(a.start_at) - Date.parse(b.start_at));
+  }
+
+  getAppointment(id: string): Promise<Appointment | null> {
+    return this.repo.get('appointments', id);
+  }
+
+  /**
+   * 從行程一鍵開啟服務紀錄:個案、軌別、日期、起訖時間自動帶入;自費走快速模式(帶入上次治療)。
+   * 已開啟過則直接回傳既有紀錄,不會重複建立。
+   */
+  async startFromAppointment(id: string): Promise<{ encounter: Encounter; created: boolean; prefilled: boolean }> {
+    const a = await this.mustGetAppointment(id);
+    if (a.status === 'cancelled') throw new DomainError('conflict', '行程已取消');
+    if (a.patient_id === null) throw new DomainError('conflict', '請先為此行程指定個案');
+    if (a.encounter_id !== null) {
+      const existing = await this.mustGetEncounter(a.encounter_id);
+      return { encounter: existing, created: false, prefilled: false };
+    }
+    const base = { patient_id: a.patient_id, service_date: dateOf(a.start_at), start_time: timeOf(a.start_at), end_time: timeOf(a.end_at) };
+    let encounter: Encounter;
+    let prefilled = false;
+    if (a.track === 'self_pay') {
+      ({ encounter, prefilled } = await this.startVisit(base));
+    } else {
+      encounter = await this.createEncounter({ ...base, track: 'ltc', location: 'home' });
+    }
+    await acceptRowOrThrow(this.repo, 'appointments', { ...a, encounter_id: encounter.id, updated_at: this.laterThan(a.updated_at) });
+    return { encounter, created: true, prefilled };
+  }
+
+  /** 某日行程(依時間排序,不含已取消) */
+  async appointmentsOnDate(date: string): Promise<Appointment[]> {
+    return appointmentsOn(await this.listAppointments(date, date), date);
+  }
+
   // ───────────── 字典表、目標、常用清單 ─────────────
 
   /** 植入預設測驗庫與動作庫;已存在的項目(含使用者修改過的)不覆蓋。 */
@@ -392,6 +511,12 @@ export class DataService {
     const t = this.now();
     if (Date.parse(t) > Date.parse(prev)) return t;
     return toTaipeiIso(new Date(Date.parse(prev) + 1));
+  }
+
+  private async mustGetAppointment(id: string): Promise<Appointment> {
+    const a = await this.repo.get('appointments', id);
+    if (!a) throw new DomainError('not_found', '找不到行程');
+    return a;
   }
 
   private async mustGetPatient(id: string): Promise<Patient> {

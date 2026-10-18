@@ -89,6 +89,23 @@ const MIGRATIONS: readonly Migration[] = [
     // 既有資料庫補上 schema 新增、但舊版 CREATE TABLE 沒有的欄位;全新資料庫不受影響
     run: (db) => ensureColumns(db),
   },
+  {
+    version: 4,
+    name: '排程表 appointments 與 Google 行事曆對應表(僅 server)',
+    sql: [
+      createTableSql('appointments'),
+      ...(tableDef('appointments').indexes ?? []).map((c) => `CREATE INDEX IF NOT EXISTS idx_appointments_${c} ON appointments(${c})`),
+      // Google 對應資料只存在 server,不隨同步下發,避免被 client 的整列覆寫洗掉
+      `CREATE TABLE IF NOT EXISTS gcal_map (
+         appointment_id TEXT PRIMARY KEY,
+         event_id TEXT NOT NULL UNIQUE,
+         etag TEXT,
+         synced_at TEXT NOT NULL,
+         remote_deleted INTEGER NOT NULL DEFAULT 0
+       )`,
+      'CREATE TABLE IF NOT EXISTS kv (key TEXT PRIMARY KEY, value TEXT NOT NULL)',
+    ],
+  },
 ];
 
 function toSql(c: ColumnDef, v: unknown): SQLInputValue {
@@ -105,6 +122,24 @@ function fromSql(c: ColumnDef, v: unknown): unknown {
   if (c.type === 'integer' || c.type === 'real') return Number(v);
   return v;
 }
+
+export interface GcalMapRow {
+  appointment_id: string;
+  event_id: string;
+  etag: string | null;
+  synced_at: string;
+  remote_deleted: boolean;
+}
+
+interface GcalMapRaw {
+  appointment_id: string;
+  event_id: string;
+  etag: string | null;
+  synced_at: string;
+  remote_deleted: number | bigint;
+}
+
+const toMap = (r: GcalMapRaw): GcalMapRow => ({ ...r, remote_deleted: Number(r.remote_deleted) === 1 });
 
 export class SqliteRepo implements Repo {
   readonly db: DatabaseSync;
@@ -163,6 +198,36 @@ export class SqliteRepo implements Repo {
     return (this.db.prepare('SELECT * FROM encounters WHERE patient_id = ?').all(patientId) as SqlRow[]).map((r) =>
       this.decode('encounters', r),
     );
+  }
+
+  // ── Google 行事曆對應(僅 server) ──
+
+  getMap(appointmentId: string): GcalMapRow | null {
+    const r = this.db.prepare('SELECT * FROM gcal_map WHERE appointment_id = ?').get(appointmentId) as GcalMapRaw | undefined;
+    return r ? toMap(r) : null;
+  }
+
+  getMapByEvent(eventId: string): GcalMapRow | null {
+    const r = this.db.prepare('SELECT * FROM gcal_map WHERE event_id = ?').get(eventId) as GcalMapRaw | undefined;
+    return r ? toMap(r) : null;
+  }
+
+  putMap(m: GcalMapRow): void {
+    this.db
+      .prepare(
+        `INSERT INTO gcal_map (appointment_id, event_id, etag, synced_at, remote_deleted) VALUES (?, ?, ?, ?, ?)
+         ON CONFLICT(appointment_id) DO UPDATE SET event_id = excluded.event_id, etag = excluded.etag, synced_at = excluded.synced_at, remote_deleted = excluded.remote_deleted`,
+      )
+      .run(m.appointment_id, m.event_id, m.etag, m.synced_at, m.remote_deleted ? 1 : 0);
+  }
+
+  getKv(key: string): string | null {
+    const r = this.db.prepare('SELECT value FROM kv WHERE key = ?').get(key) as { value: string } | undefined;
+    return r?.value ?? null;
+  }
+
+  setKv(key: string, value: string): void {
+    this.db.prepare('INSERT INTO kv (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value').run(key, value);
   }
 
   // ── 同步用 ──

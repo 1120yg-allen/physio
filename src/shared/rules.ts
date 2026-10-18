@@ -1,7 +1,7 @@
 // 資料寫入的業務規則。server 收到同步資料、client 本機寫入都經過 acceptRow,
 // 因此「簽章後鎖定」「版本不分叉」在兩端皆被強制(CLAUDE.md C2、C3)。
 import type { Repo } from './repo';
-import type { Encounter, LtcRecord, Patient, SoapNote, TableName, TableRows } from './schema';
+import type { Appointment, Encounter, LtcRecord, Patient, SoapNote, TableName, TableRows } from './schema';
 import { compareIso } from './time';
 import { DomainError, normalizeRow, rowsEqual, validateShape } from './validate';
 
@@ -67,6 +67,8 @@ async function checkTable<T extends TableName>(
       return checkNote(repo, 'soap_notes', row as SoapNote, existing as SoapNote | null);
     case 'ltc_records':
       return checkNote(repo, 'ltc_records', row as LtcRecord, existing as LtcRecord | null);
+    case 'appointments':
+      return checkAppointment(repo, row as Appointment, existing as Appointment | null);
     case 'goals': {
       const g = row as TableRows['goals'];
       if (!(await repo.get('patients', g.patient_id))) throw new Rejection('orphan', '目標所屬個案不存在');
@@ -87,6 +89,24 @@ function checkLww(row: { updated_at: string; created_at: string }, existing: { u
 function checkPatient(row: Patient, existing: Patient | null): void {
   if ((row.track === 'ltc' || row.track === 'both') && row.ltc_level === null) {
     throw new Rejection('invalid', '長照個案須填寫長照需要等級');
+  }
+  checkLww(row, existing);
+}
+
+async function checkAppointment(repo: Repo, row: Appointment, existing: Appointment | null): Promise<void> {
+  if (!(Date.parse(row.end_at) > Date.parse(row.start_at))) throw new Rejection('invalid', '行程結束時間必須晚於開始時間');
+  let patient = null;
+  if (row.patient_id !== null) {
+    patient = await repo.get('patients', row.patient_id);
+    if (!patient) throw new Rejection('orphan', '行程所屬個案不存在');
+    if (patient.track !== 'both' && patient.track !== row.track) {
+      throw new Rejection('conflict', '自費與長照為平行軌,個案軌別與行程軌別不符');
+    }
+  }
+  if (row.encounter_id !== null) {
+    const enc = await repo.get('encounters', row.encounter_id);
+    if (!enc) throw new Rejection('orphan', '行程連結的服務紀錄不存在');
+    if (enc.patient_id !== row.patient_id) throw new Rejection('conflict', '行程與服務紀錄的個案不一致');
   }
   checkLww(row, existing);
 }

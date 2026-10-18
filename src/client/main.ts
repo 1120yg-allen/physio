@@ -10,6 +10,7 @@ import { trendChart } from './chart';
 import { IdbRepo, openPhysioDb } from './idb';
 import { soapForm, type FormMode } from './soapform';
 import { soapReadonly } from './soapview';
+import { scheduleViews } from './schedule';
 import { httpTransport, runSync, type SyncOutcome } from './sync';
 
 const TRACK_LABEL: Record<Track, string> = { self_pay: '自費', ltc: '長照', both: '自費+長照' };
@@ -19,6 +20,7 @@ const LOC_LABEL: Record<Location, string> = { home: '居家', facility: '機構'
 
 let repo: IdbRepo;
 let svc: DataService;
+let sched: ReturnType<typeof scheduleViews>;
 const app = document.getElementById('app') as HTMLElement;
 
 // ───────────── 90 秒計時(TASKS 1.5):只存秒數與模式,不含任何個案資料 ─────────────
@@ -100,15 +102,18 @@ async function doSync(): Promise<void> {
 // ───────────── 路由 ─────────────
 
 function layout(title: string, body: (Node | null)[], back?: string): void {
-  app.replaceChildren(
+  const inSchedule = location.hash.startsWith('#/schedule');
+  const nodes: (Node | null)[] = [
     h('header', { className: 'bar' },
       back ? h('a', { className: 'home btn', href: back }, '‹') : null,
       h('h1', null, title),
       statusEl,
       h('button', { onclick: () => void doSync() }, '同步'),
     ),
-    ...body.filter((n): n is Node => n !== null),
-  );
+    back ? null : h('nav', { className: 'tabs' }, h('a', { href: '#/', className: inSchedule ? '' : 'on' }, '個案'), h('a', { href: '#/schedule', className: inSchedule ? 'on' : '' }, '排程')),
+    ...body,
+  ];
+  app.replaceChildren(...nodes.filter((n): n is Node => n !== null));
 }
 
 function errorBox(msg: string): HTMLElement {
@@ -126,6 +131,11 @@ async function render(): Promise<void> {
   editingView = false;
   const parts = location.hash.replace(/^#\/?/, '').split('/').filter(Boolean);
   try {
+    if (parts[0] === 'schedule') {
+      if (parts[1] === 'new') return await sched.viewAppointmentForm(null, parts[2] ?? todayTaipei());
+      if (parts[1] === 'edit' && parts[2]) return await sched.viewAppointmentForm(parts[2], todayTaipei());
+      return await sched.viewSchedule(parts[1] === 'week' ? 'week' : 'day', parts[2] ?? todayTaipei());
+    }
     if (parts[0] === 'patient' && parts[1] === 'new') return await viewPatientForm(null);
     if (parts[0] === 'patient' && parts[1] && parts[2] === 'edit') return await viewPatientForm(parts[1]);
     if (parts[0] === 'patient' && parts[1]) return await viewPatient(parts[1]);
@@ -608,6 +618,15 @@ async function main(): Promise<void> {
   repo = new IdbRepo(db);
   svc = new DataService({ repo });
   await svc.seedDictionaries();
+  sched = scheduleViews({
+    svc, layout, render, doSync, describeError, errorBox,
+    setEditing: (v) => { editingView = v; },
+    onVisitStarted: (encounterId, prefilled) => {
+      markVisitStart(encounterId);
+      lsSet(`physio.mode.${encounterId}`, prefilled ? 'quick' : 'full');
+    },
+    refreshStatus,
+  });
 
   window.addEventListener('hashchange', () => void render());
   window.addEventListener('online', () => void doSync());

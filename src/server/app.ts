@@ -5,6 +5,7 @@ import { extname, join, normalize } from 'node:path';
 import { applyChanges, type SyncRequest, type SyncResponse } from '../shared/sync';
 import { isTableName } from '../shared/schema';
 import type { SqliteRepo } from './db';
+import type { GcalService } from './gcal/service';
 
 const MAX_BODY = 64 * 1024 * 1024;
 
@@ -79,7 +80,7 @@ function serveStatic(staticDir: string, urlPath: string, res: ServerResponse): v
   res.writeHead(200, headers).end(readFileSync(file));
 }
 
-export function createApp(repo: SqliteRepo, staticDir: string): Server {
+export function createApp(repo: SqliteRepo, staticDir: string, gcal?: GcalService): Server {
   return createServer((req, res) => {
     void (async () => {
       try {
@@ -87,7 +88,17 @@ export function createApp(repo: SqliteRepo, staticDir: string): Server {
         if (url === '/api/health' && req.method === 'GET') return sendJson(res, 200, { ok: true });
         if (url === '/api/sync' && req.method === 'POST') {
           const body = parseSyncRequest(await readBody(req));
-          return sendJson(res, 200, await handleSync(repo, body));
+          const out = await handleSync(repo, body);
+          sendJson(res, 200, out);
+          // 行程有變動時,回應之後在背景推送到 Google(不阻塞裝置同步;執行中會自動略過)
+          if (body.changes.some((c) => c.table === 'appointments')) void gcal?.run();
+          return;
+        }
+        if (url === '/api/gcal/status' && req.method === 'GET') {
+          return sendJson(res, 200, gcal ? gcal.status() : { enabled: false, reason: '未啟用', privacy: 'minimal', running: false, last_run_at: null, last_ok: null, last_error: null, last_result: null });
+        }
+        if (url === '/api/gcal/sync' && req.method === 'POST') {
+          return sendJson(res, 200, gcal ? await gcal.run() : { enabled: false });
         }
         if (url.startsWith('/api/')) return sendJson(res, 404, { error: '找不到' });
         if (req.method === 'GET') return serveStatic(staticDir, url, res);
