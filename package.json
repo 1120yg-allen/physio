@@ -8,7 +8,8 @@
   "scripts": {
     "dev": "node scripts/dev.mjs",
     "build": "tsc --noEmit && vite build",
-    "start": "tsx src/server/index.ts",
+    "start": "node scripts/start.mjs",
+    "serve": "tsx src/server/index.ts",
     "backup": "tsx src/server/cli.ts backup",
     "restore": "tsx src/server/cli.ts restore",
     "gcal:auth": "tsx src/server/cli.ts gcal-auth",

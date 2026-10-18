@@ -73,7 +73,12 @@ function serveStatic(staticDir: string, urlPath: string, res: ServerResponse): v
   }
   if (!existsSync(file) || statSync(file).isDirectory()) file = join(staticDir, 'index.html');
   if (!existsSync(file)) {
-    res.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' }).end('尚未建置前端,請先執行 npm run build');
+    res.writeHead(503, { 'content-type': 'text/html; charset=utf-8' }).end(
+      '<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>尚未建置</title>' +
+        '<body style="font:18px/1.6 -apple-system,sans-serif;max-width:32em;margin:3em auto;padding:0 1em">' +
+        '<h1>系統已啟動,但還沒有網頁畫面</h1><p>請在專案資料夾執行:</p><pre style="background:#eee;padding:.8em;border-radius:8px">npm run build</pre>' +
+        '<p>完成後重新整理此頁。(之後用 <code>npm start</code> 會自動處理。)</p></body>',
+    );
     return;
   }
   const headers: Record<string, string> = { 'content-type': MIME[extname(file)] ?? 'application/octet-stream' };

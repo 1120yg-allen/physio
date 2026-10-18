@@ -7,13 +7,23 @@ Local-first PWA:資料存在你自己的裝置(IndexedDB)與自己的機器(SQLi
 
 ## 啟動
 
-需要 Node.js 22.13 以上。
+需要 Node.js 22.13 以上(到 [nodejs.org](https://nodejs.org) 安裝 LTS 版本)。
 
 ```bash
-npm install
-npm run build      # 建置前端
-npm start          # 啟動服務 → http://127.0.0.1:8787
+git clone https://github.com/1120yg-allen/physio
+cd physio
+npm install      # 只需第一次
+npm start        # 第一次會自動建置前端,然後啟動
 ```
+
+看到「啟動後請用瀏覽器開啟:http://127.0.0.1:8787」就用**同一台電腦**的瀏覽器開啟該網址。關閉請在終端機按 Ctrl+C。
+
+> **網頁打不開?** 依序檢查:
+> 1. 終端機有沒有出現錯誤?(「需要 Node.js 22.13 以上」→ 升級 Node;「尚未安裝相依套件」→ 先 `npm install`)
+> 2. 網址要用 `http://127.0.0.1:8787`(不是 https)。服務只聽本機,**從其他裝置(iPad、手機)連不到**,要連請見下方 `HOST` 與 Tailscale 說明。
+> 3. 8787 埠被佔用 → `PORT=8800 npm start` 換一個埠。
+> 4. 看到「系統已啟動,但還沒有網頁畫面」→ 執行 `npm run build` 後重新整理。
+> 5. 網頁在 Claude 雲端工作階段裡跑時,你自己電腦的瀏覽器**無法**連到它(那是雲端容器內的 localhost);請在自己的電腦上執行。
 
 開發模式(前端熱更新):`npm run dev` → http://127.0.0.1:5173
 
