@@ -121,3 +121,6 @@ nav.tabs a.on { background: var(--brand); color: #fff; }
 .sched-title { font-size: 18px; }
 .gcal-line { margin-top: 8px; display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
 .seg a.btn.on { background: var(--brand); border-color: var(--brand); color: #fff; }
+
+/* LINE */
+.bindcode { font-size: 40px; font-weight: 800; letter-spacing: .25em; text-align: center; padding: 12px; background: #e3eef2; border-radius: 14px; margin: 12px 0; font-variant-numeric: tabular-nums; }

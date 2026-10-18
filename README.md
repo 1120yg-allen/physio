@@ -3,7 +3,7 @@
 Local-first PWA:資料存在你自己的裝置(IndexedDB)與自己的機器(SQLite),不經第三方雲。
 規格見 [`build-spec/`](build-spec/)(動手前先讀 `CLAUDE.md`、`SPEC.md`)。
 
-**目前進度:P0(資料層)、P1(自費 SOAP)、P2(排程與行事曆)完成;P1 待驗收,P2 的 Google 同步待你用真實帳號驗證。**
+**目前進度:P0–P2、P4 完成。P1 待驗收;P2 的 Google 同步、P4 的 LINE 待你用真實帳號驗證。P3(長照核銷)依 Q4 決定是否做。**
 
 ## 啟動
 
@@ -91,10 +91,42 @@ npm run typecheck
 - 在 Google 上新增的事件會變成「未指定個案」的行程,指定個案後才能開服務紀錄。全天事件略過。
 - 在 Google 上刪除已開啟服務紀錄的行程:本機行程保留並顯示警示。
 
+## P4 LINE 整合
+
+功能:
+- **預約提醒**:服務前一日 18:00 起自動推送一則(可用 `LINE_REMINDER_HOUR` 調整);**不含任何健康資訊、地址或備註**。改期會再提醒一次;已取消、未綁定、一小時內開始的不發。
+- **到達/完成通知**:服務紀錄頁按「通知家屬:我到了/服務完成」。離線時先排入佇列,連線同步後送出;**逾 30 分鐘未送達即不再送出**(過時的「我到了」沒有意義)。每個服務各只能送一則。
+- **家屬版摘要**:簽章後自動產生白話摘要,傳送前可直接修改。**規則式轉譯,未使用任何 AI(C1)**:術語換白話、數值附長條圖(LINE Flex,不需公網圖片)、一律以「接下來怎麼做」收尾;不含臨床推理、風險標記、生命徵象、常模比較。
+- **居家運動推送**:簽章後按「推送居家運動」,附白話動作名稱、劑量與示範影片連結(到「動作庫」分頁貼上影片網址,例如 YouTube 不公開連結)。
+
+**綁定流程(家屬同意機制)**:個案頁按「產生家屬綁定碼」→ 家屬加入官方帳號好友 → 傳送「綁定 123456」。綁定碼 6 位數、48 小時有效、單次使用;同一 LINE 使用者連續輸錯 5 次鎖定 1 小時。家屬回覆「停止」、封鎖或取消好友即解除綁定。綁定成功的回覆只顯示遮罩姓名(王○○)。LINE user id 只存在 server,不會下發到裝置。
+
+設定步驟:
+1. 到 [LINE Developers](https://developers.line.biz/) 建立 Messaging API 頻道,取得 **Channel secret** 與 **Channel access token(長期)**;在官方帳號後台關閉「自動回應訊息」與「加入好友的歡迎訊息」(由系統處理),並啟用 Webhook。
+2. 啟動時帶入環境變數:
+   ```bash
+   export LINE_CHANNEL_ACCESS_TOKEN=...   LINE_CHANNEL_SECRET=...
+   export LINE_CLINIC_NAME=你的診所名稱   LINE_CONTACT="0912-345-678"   # 提醒訊息用
+   npm start
+   ```
+3. **Webhook 需要公網 HTTPS 網址,但病歷系統不可對外。** 因此 webhook 跑在**獨立的埠(預設 8788)**,只處理 `POST /line/webhook`(其他路徑一律 404),且每個請求都驗證 LINE 簽章。只把這個埠對外,主系統(8787)維持只在本機/Tailscale 內。例如用 Tailscale Funnel(請以官方文件為準,我沒有在真實環境驗證此指令):
+   ```bash
+   tailscale serve --bg --https=443 8787        # 主系統:只在你的 tailnet 內
+   tailscale funnel --bg --https=8443 8788      # 只把 webhook 埠公開
+   ```
+   然後把 `https://你的機器.你的tailnet.ts.net:8443/line/webhook` 填到 LINE Developers 的 Webhook URL 並按「驗證」。
+4. 確認權杖可用:`LINE_CHANNEL_ACCESS_TOKEN=... npm run line:test -- <LINE userId> "測試"`。
+
+注意:
+- **LINE 是第三方服務**,傳送的訊息(含摘要與居家運動)會經過 LINE 的伺服器。綁定即同意,但請你自行評估個資風險,並在告知書中說明。
+- 推送有每月則數上限(依你的官方帳號方案,以 LINE 後台顯示為準);超過時訊息會標示失敗與原因。
+- 失敗的訊息可在「傳送紀錄」按「重新傳送」;已送出的不可重送。
+
 ## 與規格的差異(基礎設施用,不改變規格欄位語意)
 
 - `encounters`、`soap_notes`、`ltc_records` 與字典表額外加 `created_at` / `updated_at`(同步與版本時間戳需要)
 - `soap_notes`、`ltc_records` 加 `encounter_id`(實現「1:1 對應 Encounter」)
+- 新增 `line_messages` 表(LINE 外送佇列,裝置離線排入、server 送出並回寫狀態);綁定/綁定碼/已送記錄為 server 專用表,不下發裝置
 - 新增 `appointments` 表(排程;SPEC §5 需要但 §2 未定義);Google 對應資料另存 server 端 `gcal_map`,不隨同步下發
 - `exercises` 加 `category`(介入類別:徒手/運動/功能性/衛教)
 - SPEC §2.3 的 `npre` 視為 `nprs` 之筆誤

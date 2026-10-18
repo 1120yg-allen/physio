@@ -12,6 +12,7 @@
     "backup": "tsx src/server/cli.ts backup",
     "restore": "tsx src/server/cli.ts restore",
     "gcal:auth": "tsx src/server/cli.ts gcal-auth",
+    "line:test": "tsx src/server/cli.ts line-test",
     "typecheck": "tsc --noEmit",
     "test": "vitest run"
   },

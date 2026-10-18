@@ -3,7 +3,7 @@
 import type { Repo } from '../shared/repo';
 import { TABLE_NAMES, type AnyRow, type Encounter, type TableName, type TableRows } from '../shared/schema';
 
-const DB_VERSION = 2; // v2:新增 appointments 倉庫(onupgradeneeded 會補建缺少的倉庫)
+const DB_VERSION = 3; // v2:appointments、v3:line_messages(onupgradeneeded 會補建缺少的倉庫)
 
 export interface OutboxItem {
   key: string; // `${table}:${id}`

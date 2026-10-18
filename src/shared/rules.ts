@@ -1,7 +1,7 @@
 // 資料寫入的業務規則。server 收到同步資料、client 本機寫入都經過 acceptRow,
 // 因此「簽章後鎖定」「版本不分叉」在兩端皆被強制(CLAUDE.md C2、C3)。
 import type { Repo } from './repo';
-import type { Appointment, Encounter, LtcRecord, Patient, SoapNote, TableName, TableRows } from './schema';
+import type { Appointment, Encounter, LineMessage, LtcRecord, Patient, SoapNote, TableName, TableRows } from './schema';
 import { compareIso } from './time';
 import { DomainError, normalizeRow, rowsEqual, validateShape } from './validate';
 
@@ -67,6 +67,8 @@ async function checkTable<T extends TableName>(
       return checkNote(repo, 'soap_notes', row as SoapNote, existing as SoapNote | null);
     case 'ltc_records':
       return checkNote(repo, 'ltc_records', row as LtcRecord, existing as LtcRecord | null);
+    case 'line_messages':
+      return checkLineMessage(repo, row as LineMessage, existing as LineMessage | null);
     case 'appointments':
       return checkAppointment(repo, row as Appointment, existing as Appointment | null);
     case 'goals': {
@@ -91,6 +93,23 @@ function checkPatient(row: Patient, existing: Patient | null): void {
     throw new Rejection('invalid', '長照個案須填寫長照需要等級');
   }
   checkLww(row, existing);
+}
+
+async function checkLineMessage(repo: Repo, row: LineMessage, existing: LineMessage | null): Promise<void> {
+  if (!(await repo.get('patients', row.patient_id))) throw new Rejection('orphan', '訊息所屬個案不存在');
+  if (row.encounter_id !== null) {
+    const enc = await repo.get('encounters', row.encounter_id);
+    if (!enc) throw new Rejection('orphan', '訊息連結的服務紀錄不存在');
+    if (enc.patient_id !== row.patient_id) throw new Rejection('conflict', '訊息與服務紀錄的個案不一致');
+  }
+  const items = (row.payload as { items?: unknown }).items;
+  if (!Array.isArray(items) || items.length < 1 || items.length > 5) throw new Rejection('invalid', 'LINE 一次最多 5 則訊息,至少 1 則');
+  if (existing) {
+    if (row.created_at !== existing.created_at) throw new Rejection('conflict', 'created_at 不可修改');
+    if (compareIso(row.updated_at, existing.updated_at) < 0) throw new Rejection('stale', '對方資料較新,未覆寫');
+    // 已送出的訊息不可被改回待送(避免重複發送)
+    if (existing.status === 'sent') throw new Rejection('locked', '訊息已送出,不可修改');
+  }
 }
 
 async function checkAppointment(repo: Repo, row: Appointment, existing: Appointment | null): Promise<void> {

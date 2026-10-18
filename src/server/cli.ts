@@ -1,7 +1,9 @@
 // 命令列:npm run backup / npm run restore -- <備份檔>
 import { SqliteRepo } from './db';
 import { backupNow, listBackups, restoreBackup } from './backup';
+import { randomUUID } from 'node:crypto';
 import { dirname } from 'node:path';
+import { HttpLineApi } from './line/api';
 import { loadConfig } from './config';
 import { accessTokenProvider, clientFromEnv, createDedicatedCalendar, gcalFiles, readConfig, runAuthFlow, saveConfig } from './gcal/auth';
 
@@ -20,6 +22,17 @@ if (cmd === 'backup') {
   }
   const kept = restoreBackup(arg, cfg.dbPath);
   console.log(`還原完成。${kept ? `原資料庫已保留為:${kept}` : ''}`);
+} else if (cmd === 'line-test') {
+  // 用法:npm run line:test -- <LINE userId> [訊息]  (userId 可由綁定流程取得;此指令用於確認頻道權杖可用)
+  const token = process.env.LINE_CHANNEL_ACCESS_TOKEN;
+  if (!token || !arg) {
+    console.log('用法:LINE_CHANNEL_ACCESS_TOKEN=... npm run line:test -- <LINE userId> [訊息]');
+    process.exit(1);
+  }
+  const msg = process.argv[4] ?? '這是一則測試訊息(居家物理治療系統)';
+  const r = await new HttpLineApi(token).push(arg, [{ type: 'text', text: msg }], randomUUID());
+  console.log(r.ok ? '已送出' : `失敗:${r.detail}`);
+  process.exit(r.ok ? 0 : 1);
 } else if (cmd === 'gcal-auth') {
   const creds = clientFromEnv();
   if (!creds) {
@@ -35,6 +48,6 @@ if (cmd === 'backup') {
   }
   console.log('授權完成。重新啟動服務(npm start)即可開始同步。');
 } else {
-  console.log('用法:npm run backup | npm run restore -- <備份檔> | npm run gcal:auth');
+  console.log('用法:npm run backup | npm run restore -- <備份檔> | npm run gcal:auth | npm run line:test');
   process.exit(1);
 }

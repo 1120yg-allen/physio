@@ -6,6 +6,8 @@ import { applyChanges, type SyncRequest, type SyncResponse } from '../shared/syn
 import { isTableName } from '../shared/schema';
 import type { SqliteRepo } from './db';
 import type { GcalService } from './gcal/service';
+import type { LineService } from './line/service';
+import { DomainError } from '../shared/validate';
 
 const MAX_BODY = 64 * 1024 * 1024;
 
@@ -80,7 +82,13 @@ function serveStatic(staticDir: string, urlPath: string, res: ServerResponse): v
   res.writeHead(200, headers).end(readFileSync(file));
 }
 
-export function createApp(repo: SqliteRepo, staticDir: string, gcal?: GcalService): Server {
+export interface Services {
+  gcal?: GcalService;
+  line?: LineService;
+}
+
+export function createApp(repo: SqliteRepo, staticDir: string, services: Services = {}): Server {
+  const { gcal, line } = services;
   return createServer((req, res) => {
     void (async () => {
       try {
@@ -92,6 +100,8 @@ export function createApp(repo: SqliteRepo, staticDir: string, gcal?: GcalServic
           sendJson(res, 200, out);
           // 行程有變動時,回應之後在背景推送到 Google(不阻塞裝置同步;執行中會自動略過)
           if (body.changes.some((c) => c.table === 'appointments')) void gcal?.run();
+          // 裝置排入的 LINE 訊息(到達/完成/摘要/HEP):同步抵達後立即送出
+          if (body.changes.some((c) => c.table === 'line_messages')) void line?.drain();
           return;
         }
         if (url === '/api/gcal/status' && req.method === 'GET') {
@@ -100,11 +110,33 @@ export function createApp(repo: SqliteRepo, staticDir: string, gcal?: GcalServic
         if (url === '/api/gcal/sync' && req.method === 'POST') {
           return sendJson(res, 200, gcal ? await gcal.run() : { enabled: false });
         }
+        if (url === '/api/line/status' && req.method === 'GET') {
+          return sendJson(res, 200, line ? line.status() : { enabled: false, reason: '未啟用', clinic_name: '', reminder_hour: 18, running: false, last_drain: null, last_error: null });
+        }
+        if (url === '/api/line/bindcode' && req.method === 'POST') {
+          if (!line?.enabled) return sendJson(res, 409, { error: 'LINE 尚未設定' });
+          const b = JSON.parse(await readBody(req)) as { patient_id?: unknown; role?: unknown };
+          if (typeof b.patient_id !== 'string') throw new SyntaxError('格式錯誤');
+          return sendJson(res, 200, await line.createBindCode(b.patient_id, b.role === 'patient' ? 'patient' : 'family'));
+        }
+        if (url.startsWith('/api/line/links') && req.method === 'GET') {
+          const pid = new URL(url, 'http://x').searchParams.get('patient_id');
+          return sendJson(res, 200, { links: line && pid ? line.links(pid) : [] });
+        }
+        if (url === '/api/line/unlink' && req.method === 'POST') {
+          const b = JSON.parse(await readBody(req)) as { id?: unknown };
+          if (typeof b.id !== 'string') throw new SyntaxError('格式錯誤');
+          return sendJson(res, 200, { ok: line?.unlink(b.id) ?? false });
+        }
+        if (url === '/api/line/retry' && req.method === 'POST') {
+          return sendJson(res, 200, line ? await line.drain() : { enabled: false });
+        }
         if (url.startsWith('/api/')) return sendJson(res, 404, { error: '找不到' });
         if (req.method === 'GET') return serveStatic(staticDir, url, res);
         res.writeHead(405).end();
       } catch (e) {
         // 錯誤訊息可能夾帶資料內容,只回傳通用訊息,不記錄細節
+        if (e instanceof DomainError) return sendJson(res, 404, { error: e.message });
         const known = e instanceof SyntaxError || (e instanceof Error && e.message === '格式錯誤');
         sendJson(res, known ? 400 : 500, { error: known ? '請求格式錯誤' : '伺服器錯誤' });
       }

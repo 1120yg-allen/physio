@@ -10,7 +10,8 @@ import { trendChart } from './chart';
 import { IdbRepo, openPhysioDb } from './idb';
 import { soapForm, type FormMode } from './soapform';
 import { soapReadonly } from './soapview';
-import { scheduleViews } from './schedule';
+import { scheduleViews, type ViewCtx } from './schedule';
+import { encounterLineCard, patientLineCard, viewLibrary } from './linecard';
 import { httpTransport, runSync, type SyncOutcome } from './sync';
 
 const TRACK_LABEL: Record<Track, string> = { self_pay: '自費', ltc: '長照', both: '自費+長照' };
@@ -21,6 +22,7 @@ const LOC_LABEL: Record<Location, string> = { home: '居家', facility: '機構'
 let repo: IdbRepo;
 let svc: DataService;
 let sched: ReturnType<typeof scheduleViews>;
+let viewCtx: ViewCtx;
 const app = document.getElementById('app') as HTMLElement;
 
 // ───────────── 90 秒計時(TASKS 1.5):只存秒數與模式,不含任何個案資料 ─────────────
@@ -103,6 +105,7 @@ async function doSync(): Promise<void> {
 
 function layout(title: string, body: (Node | null)[], back?: string): void {
   const inSchedule = location.hash.startsWith('#/schedule');
+  const inLibrary = location.hash.startsWith('#/library');
   const nodes: (Node | null)[] = [
     h('header', { className: 'bar' },
       back ? h('a', { className: 'home btn', href: back }, '‹') : null,
@@ -110,7 +113,7 @@ function layout(title: string, body: (Node | null)[], back?: string): void {
       statusEl,
       h('button', { onclick: () => void doSync() }, '同步'),
     ),
-    back ? null : h('nav', { className: 'tabs' }, h('a', { href: '#/', className: inSchedule ? '' : 'on' }, '個案'), h('a', { href: '#/schedule', className: inSchedule ? 'on' : '' }, '排程')),
+    back ? null : h('nav', { className: 'tabs' }, h('a', { href: '#/', className: inSchedule || inLibrary ? '' : 'on' }, '個案'), h('a', { href: '#/schedule', className: inSchedule ? 'on' : '' }, '排程'), h('a', { href: '#/library', className: inLibrary ? 'on' : '' }, '動作庫')),
     ...body,
   ];
   app.replaceChildren(...nodes.filter((n): n is Node => n !== null));
@@ -131,6 +134,7 @@ async function render(): Promise<void> {
   editingView = false;
   const parts = location.hash.replace(/^#\/?/, '').split('/').filter(Boolean);
   try {
+    if (parts[0] === 'library') return await viewLibrary(viewCtx);
     if (parts[0] === 'schedule') {
       if (parts[1] === 'new') return await sched.viewAppointmentForm(null, parts[2] ?? todayTaipei());
       if (parts[1] === 'edit' && parts[2]) return await sched.viewAppointmentForm(parts[2], todayTaipei());
@@ -373,6 +377,7 @@ async function viewPatient(id: string): Promise<void> {
       canSelfPay ? null : msg,
       h('p', null, h('button', { className: 'primary', onclick: () => void create() }, '建立')),
     ),
+    await patientLineCard(viewCtx, p),
     h('div', { className: 'card' },
       h('h2', null, '治療目標'),
       goalLines.length === 0 ? h('p', { className: 'muted' }, '尚未設定目標。') : null,
@@ -503,6 +508,7 @@ async function viewEncounter(id: string): Promise<void> {
       h('div', { className: 'card' }, statusRow, h('p', { className: 'muted' }, `已於 ${e.signed_at} 簽章鎖定,不可直接修改。如需更正請建立新版本,原版本會完整保留。`), msg, reviseBtn),
       metaCard,
       e.track === 'self_pay' ? soapReadonly(await svc.getSoapContent(e.id), tests, exercises) : null,
+      await encounterLineCard(viewCtx, p, e),
       versionCard,
     ];
     layout(`${p.name} ${e.service_date}`, body, `#/patient/${p.id}`);
@@ -521,6 +527,7 @@ async function viewEncounter(id: string): Promise<void> {
           h('button', { className: 'primary', onclick: () => void run(async () => { await saveMeta(); await svc.signEncounter(e.id); await render(); }) }, '簽章鎖定'))),
       metaCard,
       h('p', { className: 'muted' }, '長照申報欄位將於 P3 加入。'),
+      await encounterLineCard(viewCtx, p, e),
       versionCard,
     ], `#/patient/${p.id}`);
     await refreshStatus();
@@ -602,6 +609,7 @@ async function viewEncounter(id: string): Promise<void> {
     ),
     metaCard,
     form.el,
+    await encounterLineCard(viewCtx, p, e),
     msg,
     h('div', { className: 'sign-bar' },
       h('button', { onclick: () => void run(async () => { await form.flush(); await saveMeta(); await render(); }) }, '儲存'),
@@ -618,7 +626,7 @@ async function main(): Promise<void> {
   repo = new IdbRepo(db);
   svc = new DataService({ repo });
   await svc.seedDictionaries();
-  sched = scheduleViews({
+  viewCtx = {
     svc, layout, render, doSync, describeError, errorBox,
     setEditing: (v) => { editingView = v; },
     onVisitStarted: (encounterId, prefilled) => {
@@ -626,7 +634,8 @@ async function main(): Promise<void> {
       lsSet(`physio.mode.${encounterId}`, prefilled ? 'quick' : 'full');
     },
     refreshStatus,
-  });
+  };
+  sched = scheduleViews(viewCtx);
 
   window.addEventListener('hashchange', () => void render());
   window.addEventListener('online', () => void doSync());

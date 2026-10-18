@@ -106,6 +106,34 @@ const MIGRATIONS: readonly Migration[] = [
       'CREATE TABLE IF NOT EXISTS kv (key TEXT PRIMARY KEY, value TEXT NOT NULL)',
     ],
   },
+  {
+    version: 5,
+    name: 'LINE:外送佇列 line_messages 與 server 專用的綁定/提醒表',
+    sql: [
+      createTableSql('line_messages'),
+      ...(tableDef('line_messages').indexes ?? []).map((c) => `CREATE INDEX IF NOT EXISTS idx_line_messages_${c} ON line_messages(${c})`),
+      // LINE 使用者 id 屬識別資料,只存在 server,不隨同步下發到裝置
+      `CREATE TABLE IF NOT EXISTS line_links (
+         id TEXT PRIMARY KEY,
+         patient_id TEXT NOT NULL,
+         line_user_id TEXT NOT NULL,
+         role TEXT NOT NULL,
+         status TEXT NOT NULL,
+         bound_at TEXT NOT NULL,
+         revoked_at TEXT
+       )`,
+      'CREATE INDEX IF NOT EXISTS idx_line_links_patient ON line_links(patient_id)',
+      'CREATE INDEX IF NOT EXISTS idx_line_links_user ON line_links(line_user_id)',
+      `CREATE TABLE IF NOT EXISTS line_bind_codes (
+         code TEXT PRIMARY KEY,
+         patient_id TEXT NOT NULL,
+         role TEXT NOT NULL,
+         expires_at TEXT NOT NULL,
+         used_at TEXT
+       )`,
+      'CREATE TABLE IF NOT EXISTS line_sent_keys (key TEXT PRIMARY KEY, sent_at TEXT NOT NULL)',
+    ],
+  },
 ];
 
 function toSql(c: ColumnDef, v: unknown): SQLInputValue {

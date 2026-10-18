@@ -4,8 +4,10 @@
 import type { Repo } from './repo';
 import { acceptRowOrThrow, assertSignable, Rejection } from './rules';
 import { SEED_EXERCISES, SEED_TESTS } from './seed';
-import { appointmentsOn, dateOf, makeIso, timeOf } from './schedule';
-import type { Appointment, Encounter, EncounterTrack, Exercise, Favorite, Goal, LtcRecord, Location, Patient, SoapNote, TestDef } from './schema';
+import type { FamilyInput, TrendPt } from './family';
+import { addDays, appointmentsOn, dateOf, makeIso, timeOf } from './schedule';
+import { trendFor } from './trend';
+import type { Appointment, Encounter, EncounterTrack, Exercise, Favorite, Goal, LineMessage, LineMessageKind, LtcRecord, Location, Patient, SoapNote, TestDef } from './schema';
 import { emptySoap, parseSoap, pickPreviousEncounter, prefillFromPrevious, serializeSoap, soapMissing, type SoapContent } from './soap';
 import { nowTaipei, toTaipeiIso } from './time';
 import { DomainError } from './validate';
@@ -257,7 +259,7 @@ export class DataService {
   /** 某個案的所有服務紀錄(含歷史版本),依服務日期、版本排序。 */
   async listEncounters(patientId: string): Promise<Encounter[]> {
     const list = await this.repo.listEncountersByPatient(patientId);
-    return list.sort((a, b) => b.service_date.localeCompare(a.service_date) || b.start_time.localeCompare(a.start_time) || b.version - a.version);
+    return list.sort((a, b) => b.service_date.localeCompare(a.service_date) || b.start_time.localeCompare(a.start_time) || b.version - a.version || b.created_at.localeCompare(a.created_at));
   }
 
   /** 版本鏈:從任一版本出發,回傳由 v1 到最新版的完整串列。 */
@@ -435,6 +437,113 @@ export class DataService {
   /** 某日行程(依時間排序,不含已取消) */
   async appointmentsOnDate(date: string): Promise<Appointment[]> {
     return appointmentsOn(await this.listAppointments(date, date), date);
+  }
+
+  // ───────────── LINE 外送 ─────────────
+
+  /**
+   * 排入一則 LINE 外送(離線也可排入,同步到 server 後由 server 送出)。
+   * 到達/完成通知同一服務各只能有一則(失敗或略過者可重送)。
+   */
+  async queueLine(input: {
+    patient_id: string;
+    encounter_id?: string | null;
+    appointment_id?: string | null;
+    kind: LineMessageKind;
+    items: Record<string, unknown>[];
+    /** 幾分鐘內有效;逾時 server 不再送出 */
+    expiresInMin?: number;
+  }): Promise<LineMessage> {
+    if (input.encounter_id && (input.kind === 'arrive' || input.kind === 'depart')) {
+      const dup = (await this.listLineMessages(input.encounter_id)).find((m) => m.kind === input.kind && (m.status === 'queued' || m.status === 'sent'));
+      if (dup) throw new DomainError('duplicate', input.kind === 'arrive' ? '已送出過「到達」通知' : '已送出過「完成」通知');
+    }
+    const t = this.now();
+    const row: LineMessage = {
+      id: this.newId(),
+      patient_id: input.patient_id,
+      encounter_id: input.encounter_id ?? null,
+      appointment_id: input.appointment_id ?? null,
+      kind: input.kind,
+      payload: { items: input.items },
+      expires_at: input.expiresInMin ? toTaipeiIso(new Date(Date.parse(t) + input.expiresInMin * 60_000)) : null,
+      status: 'queued',
+      status_detail: null,
+      attempts: 0,
+      sent_at: null,
+      created_at: t,
+      updated_at: t,
+    };
+    await acceptRowOrThrow(this.repo, 'line_messages', row);
+    return row;
+  }
+
+  async listLineMessages(encounterId: string): Promise<LineMessage[]> {
+    return (await this.repo.list('line_messages')).filter((m) => m.encounter_id === encounterId).sort((a, b) => a.created_at.localeCompare(b.created_at));
+  }
+
+  /** 失敗/略過的訊息改回待送(已送出者不可重送) */
+  async requeueLine(id: string): Promise<LineMessage> {
+    const cur = await this.repo.get('line_messages', id);
+    if (!cur) throw new DomainError('not_found', '找不到訊息');
+    if (cur.status === 'sent') throw new DomainError('locked', '訊息已送出,不可重送');
+    const row: LineMessage = { ...cur, status: 'queued', status_detail: null, attempts: 0, updated_at: this.laterThan(cur.updated_at) };
+    await acceptRowOrThrow(this.repo, 'line_messages', row);
+    return row;
+  }
+
+  /** 與某服務連結的行程(供通知關聯) */
+  async appointmentForEncounter(encounterId: string): Promise<Appointment | null> {
+    return (await this.repo.list('appointments')).find((a) => a.encounter_id === encounterId) ?? null;
+  }
+
+  /** 修改動作庫項目(例如維護示範影片網址) */
+  async updateExercise(id: string, patch: Partial<Pick<Exercise, 'name' | 'video_ref' | 'region'>>): Promise<Exercise> {
+    const cur = await this.repo.get('exercises', id);
+    if (!cur) throw new DomainError('not_found', '找不到動作');
+    const row: Exercise = { ...cur, ...patch, updated_at: this.laterThan(cur.updated_at) };
+    await acceptRowOrThrow(this.repo, 'exercises', row);
+    return row;
+  }
+
+  /**
+   * 組出家屬版摘要所需資料:上次(日期早於本次者)SOAP、各測驗至本次為止的趨勢、目標、下次預約。
+   */
+  async familySummaryInput(encounterId: string): Promise<FamilyInput> {
+    const enc = await this.mustGetEncounter(encounterId);
+    const patient = await this.mustGetPatient(enc.patient_id);
+    const content = await this.getSoapContent(encounterId);
+
+    const all = await this.repo.listEncountersByPatient(enc.patient_id);
+    const superseded = new Set(all.map((e) => e.supersedes_id).filter((x): x is string => x !== null));
+    // 「上一次」:日期、開始時間較早者;同一時間點時以建立先後為準
+    const key = (e: Encounter): string => `${e.service_date}T${e.start_time}|${e.created_at}`;
+    const earlier = all
+      .filter((e) => e.track === 'self_pay' && e.id !== enc.id && !superseded.has(e.id) && key(e) < key(enc))
+      .sort((a, b) => key(b).localeCompare(key(a)));
+    const prev = earlier[0] ? await this.getSoapContent(earlier[0].id) : null;
+
+    const trends = new Map<string, TrendPt[]>();
+    for (const m of content.objective.measures) {
+      const pts = (await trendFor(this.repo, enc.patient_id, m.test_id)).filter((p) => p.date <= enc.service_date);
+      trends.set(m.test_id, pts.slice(-5).map((p) => ({ date: p.date, value: p.value })));
+    }
+
+    const upcoming = (await this.listAppointments(enc.service_date, addDays(enc.service_date, 90)))
+      .filter((a) => a.patient_id === enc.patient_id && a.status === 'scheduled' && a.encounter_id !== enc.id && Date.parse(a.start_at) > Date.parse(`${enc.service_date}T${enc.end_time}:00+08:00`))
+      .sort((a, b) => Date.parse(a.start_at) - Date.parse(b.start_at))[0];
+
+    return {
+      patientName: patient.name,
+      serviceDate: enc.service_date,
+      content,
+      prev,
+      tests: await this.listTests(),
+      exercises: await this.listExercises(),
+      goals: await this.listGoals(enc.patient_id),
+      trends,
+      nextAppointment: upcoming ? { date: dateOf(upcoming.start_at), time: timeOf(upcoming.start_at) } : null,
+    };
   }
 
   // ───────────── 字典表、目標、常用清單 ─────────────

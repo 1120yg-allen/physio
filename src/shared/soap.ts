@@ -171,6 +171,6 @@ export function pickPreviousEncounter(all: Encounter[], excludeId: string | null
   const superseded = new Set(all.map((e) => e.supersedes_id).filter((x): x is string => x !== null));
   const cand = all
     .filter((e) => e.track === 'self_pay' && e.id !== excludeId && !superseded.has(e.id))
-    .sort((a, b) => b.service_date.localeCompare(a.service_date) || b.start_time.localeCompare(a.start_time));
+    .sort((a, b) => b.service_date.localeCompare(a.service_date) || b.start_time.localeCompare(a.start_time) || b.created_at.localeCompare(a.created_at));
   return cand[0] ?? null;
 }

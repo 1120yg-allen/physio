@@ -4,6 +4,7 @@
 // 規格外新增的欄位(僅為同步與稽核基礎設施,不改變規格欄位語意):
 //   - encounters / soap_notes / ltc_records / 字典表 的 created_at、updated_at
 //   - soap_notes / ltc_records 的 encounter_id(實現「1:1 對應 Encounter」)
+//   - line_messages 整張表(LINE 外送佇列)
 //   - appointments 整張表(排程;規格 §5 需要但 §2 未定義)
 //   - exercises 的 category(介入類別)
 //   - favorites 的 kind / ref_id / sort_order(規格僅描述「個人常用清單」)
@@ -169,6 +170,31 @@ export interface Appointment {
   updated_at: string;
 }
 
+export type LineMessageKind = 'arrive' | 'depart' | 'summary' | 'hep' | 'reminder';
+export type LineMessageStatus = 'queued' | 'sent' | 'skipped' | 'failed';
+
+/**
+ * LINE 外送訊息佇列(P4)。裝置離線時先排入,同步到 server 後由 server 送出並回寫狀態。
+ * payload.items 為 LINE Messaging API 的 message 物件(最多 5 則)。內容含健康資料,不得寫入 log。
+ * 規格 §2 未定義此表,為實現 SPEC §六 新增。
+ */
+export interface LineMessage {
+  id: string;
+  patient_id: string;
+  encounter_id: string | null;
+  appointment_id: string | null;
+  kind: LineMessageKind;
+  payload: { items: Record<string, unknown>[] };
+  /** 逾時不再送出(到達/完成通知過時就失去意義) */
+  expires_at: string | null;
+  status: LineMessageStatus;
+  status_detail: string | null;
+  attempts: number;
+  sent_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface TableRows {
   patients: Patient;
   encounters: Encounter;
@@ -179,6 +205,7 @@ export interface TableRows {
   goals: Goal;
   favorites: Favorite;
   appointments: Appointment;
+  line_messages: LineMessage;
 }
 
 export type TableName = keyof TableRows;
@@ -328,6 +355,24 @@ export const TABLES: readonly TableDef[] = [
       { name: 'status', type: 'text', required: true, enum: ['scheduled', 'cancelled'] },
       { name: 'encounter_id', type: 'text' },
       { name: 'note', type: 'text' },
+      ...ts,
+    ],
+  },
+  {
+    name: 'line_messages',
+    indexes: ['patient_id', 'encounter_id'],
+    columns: [
+      { name: 'id', type: 'text', required: true },
+      { name: 'patient_id', type: 'text', required: true },
+      { name: 'encounter_id', type: 'text' },
+      { name: 'appointment_id', type: 'text' },
+      { name: 'kind', type: 'text', required: true, enum: ['arrive', 'depart', 'summary', 'hep', 'reminder'] },
+      { name: 'payload', type: 'json', required: true },
+      { name: 'expires_at', type: 'text' },
+      { name: 'status', type: 'text', required: true, enum: ['queued', 'sent', 'skipped', 'failed'] },
+      { name: 'status_detail', type: 'text' },
+      { name: 'attempts', type: 'integer', required: true, min: 0 },
+      { name: 'sent_at', type: 'text' },
       ...ts,
     ],
   },

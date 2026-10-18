@@ -29,15 +29,19 @@ describe('SQLite schema(0.2)', () => {
     }
     const tables = (repo.db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all() as { name: string }[]).map((t) => t.name);
     for (const t of ['tests', 'exercises', 'goals', 'favorites']) expect(tables).toContain(t);
-    expect(TABLES.map((t) => t.name).sort()).toEqual(['appointments', 'encounters', 'exercises', 'favorites', 'goals', 'ltc_records', 'patients', 'soap_notes', 'tests']);
+    const defined = TABLES.map((t) => t.name);
+    for (const t of ['patients', 'encounters', 'soap_notes', 'ltc_records', 'tests', 'exercises', 'goals', 'favorites']) expect(defined).toContain(t); // SPEC §2 全部資料表
+    for (const t of defined) expect(tables, t).toContain(t); // schema 定義的每張表都已建立
   });
 
   it('migration 可重跑且不重複套用', () => {
     const repo = new SqliteRepo(':memory:');
+    const count = () => Number((repo.db.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get() as { n: number }).n);
+    const before = count();
     migrate(repo.db);
     migrate(repo.db);
-    const n = repo.db.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get() as { n: number };
-    expect(Number(n.n)).toBe(4);
+    expect(count()).toBe(before);
+    expect(before).toBeGreaterThanOrEqual(5);
   });
 
   it('JSON、布林欄位來回轉換正確', async () => {

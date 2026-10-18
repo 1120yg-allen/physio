@@ -15,7 +15,7 @@ async function boot(enabled: boolean) {
   const repo = new SqliteRepo(':memory:');
   const cal = new FakeCalendar(clock);
   const gcal = new GcalService(repo, enabled ? cal : null, 'minimal', enabled ? undefined : '尚未授權');
-  const server = createApp(repo, '/nonexistent', gcal);
+  const server = createApp(repo, '/nonexistent', { gcal });
   await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
   close = () => server.close();
   const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
