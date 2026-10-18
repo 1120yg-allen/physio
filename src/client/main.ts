@@ -17,6 +17,7 @@ import { canCorrect } from '../shared/ltc';
 import { scheduleViews, type ViewCtx } from './schedule';
 import { ltcBanner, ltcViews } from './ltcview';
 import { resetImport, viewImport } from './importwizard';
+import { viewOverview, viewPrint } from './record';
 import { encounterLineCard, patientLineCard, viewLibrary } from './linecard';
 import { httpTransport, runSync, type SyncOutcome } from './sync';
 
@@ -87,8 +88,10 @@ async function refreshStatus(): Promise<void> {
   const pending = (await repo.listOutbox()).filter((i) => !i.rejected).length;
   const attn = (await repo.listOutbox()).filter((i) => i.rejected).length;
   const offline = !navigator.onLine || (lastSync !== null && !lastSync.ok);
-  statusEl.className = `status${attn ? ' attn' : offline ? ' offline' : ''}`;
-  statusEl.textContent = attn
+  const needLogin = lastSync !== null && !lastSync.ok && lastSync.error === '需要登入';
+  statusEl.className = `status${attn || needLogin ? ' attn' : offline ? ' offline' : ''}`;
+  statusEl.onclick = needLogin ? () => location.reload() : null;
+  statusEl.textContent = needLogin ? '登入已過期,點此重新登入' : attn
     ? `${attn} 筆衝突待處理`
     : syncing
       ? '同步中…'
@@ -161,6 +164,8 @@ async function render(): Promise<void> {
       if (parts[1] === 'edit' && parts[2]) return await sched.viewAppointmentForm(parts[2], todayTaipei());
       return await sched.viewSchedule(parts[1] === 'week' ? 'week' : 'day', parts[2] ?? todayTaipei());
     }
+    if (parts[0] === 'patient' && parts[1] && parts[2] === 'overview') return await viewOverview(viewCtx, parts[1]);
+    if (parts[0] === 'patient' && parts[1] && parts[2] === 'print') return await viewPrint(viewCtx, parts[1]);
     if (parts[0] === 'patient' && parts[1] === 'new') return await viewPatientForm(null);
     if (parts[0] === 'patient' && parts[1] && parts[2] === 'edit') return await viewPatientForm(parts[1]);
     if (parts[0] === 'patient' && parts[1]) return await viewPatient(parts[1]);
@@ -173,6 +178,19 @@ async function render(): Promise<void> {
 }
 
 // ───────────── 個案列表 ─────────────
+
+/** 伺服器啟用密碼登入時,顯示「登出」 */
+async function logoutLink(): Promise<Node | string> {
+  if (STATIC_MODE) return '';
+  try {
+    const r = await fetch('/api/auth/status', { signal: AbortSignal.timeout(2000) });
+    const j = (await r.json()) as { required?: boolean };
+    if (!j.required) return '';
+  } catch {
+    return '';
+  }
+  return h('span', null, ' · ', h('a', { href: '#/', onclick: (e: Event) => { e.preventDefault(); void fetch('/api/logout', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' }).then(() => location.reload()); } }, '登出'));
+}
 
 async function viewPatientList(query = '', includeArchived = false): Promise<void> {
   const list = await svc.searchPatients(query, includeArchived);
@@ -199,7 +217,7 @@ async function viewPatientList(query = '', includeArchived = false): Promise<voi
         ),
       ),
     ),
-    h('p', { className: 'muted' }, h('a', { href: '#/import', onclick: () => resetImport() }, '匯入既有資料(Excel/CSV)'), ' · ', h('a', { href: '#/backup' }, '備份與還原'), `(${lastBackupLabel()})`),
+    h('p', { className: 'muted' }, h('a', { href: '#/import', onclick: () => resetImport() }, '匯入既有資料(Excel/CSV)'), ' · ', h('a', { href: '#/backup' }, '備份與還原'), `(${lastBackupLabel()})`, await logoutLink()),
   ]);
   await refreshStatus();
 }
@@ -379,6 +397,7 @@ async function viewPatient(id: string): Promise<void> {
     h('div', { className: 'card' },
       h('div', { className: 'row' }, h('span', { className: 'badge' }, TRACK_LABEL[p.track]), p.archived_at ? h('span', { className: 'badge' }, '已結案') : null,
         h('span', { className: 'grow' }),
+        h('a', { className: 'btn', href: `#/patient/${p.id}/overview` }, '歷程總覽'),
         h('a', { className: 'btn', href: `#/patient/${p.id}/edit` }, '編輯')),
       h('p', { className: 'muted' }, [`生日 ${p.birth_date}`, p.phone, p.address].filter(Boolean).join(' · ')),
       p.emergency_contact ? h('p', { className: 'muted' }, `緊急聯絡人:${p.emergency_contact.name}(${p.emergency_contact.relation}) ${p.emergency_contact.phone}`) : null,

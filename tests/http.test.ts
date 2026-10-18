@@ -26,14 +26,14 @@ describe('Google 行事曆 HTTP 端點', () => {
   it('未啟用:狀態說明原因,手動同步不做事', async () => {
     const { base } = await boot(false);
     expect(await (await fetch(`${base}/api/gcal/status`)).json()).toMatchObject({ enabled: false, reason: '尚未授權' });
-    expect(await (await fetch(`${base}/api/gcal/sync`, { method: 'POST' })).json()).toMatchObject({ enabled: false });
+    expect(await (await fetch(`${base}/api/gcal/sync`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' })).json()).toMatchObject({ enabled: false });
   });
 
   it('啟用:POST /api/gcal/sync 把行程推到 Google,狀態回報結果', async () => {
     const { base, svc, cal } = await boot(true);
     const p = await svc.createPatient(patientInput);
     await svc.createAppointment({ patient_id: p.id, track: 'self_pay', date: '2026-10-20', start: '14:00', end: '15:00' });
-    const st = (await (await fetch(`${base}/api/gcal/sync`, { method: 'POST' })).json()) as { enabled: boolean; last_ok: boolean; last_result: { created: number } };
+    const st = (await (await fetch(`${base}/api/gcal/sync`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' })).json()) as { enabled: boolean; last_ok: boolean; last_result: { created: number } };
     expect(st).toMatchObject({ enabled: true, last_ok: true });
     expect(st.last_result.created).toBe(1);
     expect(cal.liveEvents()).toHaveLength(1);

@@ -6,7 +6,7 @@ import { SqliteRepo } from '../src/server/db';
 import { HttpLineApi, retryKeyFor, verifySignature, type LineApi, type LineMessageObj, type PushResult } from '../src/server/line/api';
 import { drainOutbox } from '../src/server/line/outbox';
 import { enqueueReminders } from '../src/server/line/reminders';
-import { createLineService, LineService } from '../src/server/line/service';
+import { createLineService, LineService, parseHour } from '../src/server/line/service';
 import { createWebhookServer } from '../src/server/line/server';
 import { LineStore } from '../src/server/line/store';
 import { handleWebhook } from '../src/server/line/webhook';
@@ -413,13 +413,33 @@ describe('HTTP:webhook 專用埠與管理端點', () => {
     expect((await repo.get('line_messages', 'dev-1'))?.status).toBe('sent');
   });
 
+  it('綁定之後才同步到伺服器的行程,也會立即排入並送出提醒(不必等定時掃描)', async () => {
+    const { line, svc, repo, api } = build();
+    const base = await listen(createApp(repo, '/nonexistent', { line }));
+    const p = await svc.createPatient(patientInput);
+    await wh({ repo, store: line.store, api, svc, clock: fakeClock('2026-10-19T18:00:00+08:00') } as never)([msgEvent('U1', line.store.createBindCode(p.id, 'family', '2026-10-19T18:00:00+08:00').code)]);
+    // 此時還沒有任何行程;之後裝置同步了「明天」的行程
+    const start = new Date(Date.now() + 8 * 3600_000 + 86_400_000);
+    const day = start.toISOString().slice(0, 10);
+    const a = await svc.createAppointment({ patient_id: p.id, track: 'self_pay', date: day, start: '23:00', end: '23:45' });
+    const res = await fetch(`${base}/api/sync`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ since: 0, changes: [{ table: 'appointments', row: a }] }) });
+    expect(res.ok).toBe(true);
+    await new Promise((r) => setTimeout(r, 300));
+    expect(api.pushes.some((x) => String(x.messages[0]?.text).includes('23:00'))).toBe(true);
+  });
+
+  it('提醒時刻設定:0 是合法值(午夜);未設定/不合法用預設 18', () => {
+    expect([parseHour('0'), parseHour('9'), parseHour('23'), parseHour(undefined), parseHour(''), parseHour('24'), parseHour('-1'), parseHour('abc'), parseHour('7.5')]).toEqual([0, 9, 23, 18, 18, 18, 18, 18, 18]);
+    expect(createLineService(new SqliteRepo(':memory:'), { LINE_REMINDER_HOUR: '0' }).status().reminder_hour).toBe(0);
+  });
+
   it('未設定時:狀態說明原因、不能產生綁定碼', async () => {
     const repo = new SqliteRepo(':memory:');
     const line = createLineService(repo, {});
     expect(line.status()).toMatchObject({ enabled: false });
     expect(line.status().reason).toContain('LINE_CHANNEL_ACCESS_TOKEN');
     const base = await listen(createApp(repo, '/nonexistent', { line }));
-    expect((await fetch(`${base}/api/line/bindcode`, { method: 'POST', body: '{"patient_id":"x"}' })).status).toBe(409);
+    expect((await fetch(`${base}/api/line/bindcode`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{"patient_id":"x"}' })).status).toBe(409);
     expect((await line.webhook(Buffer.from('{}'), 'x')).status).toBe(503);
   });
 });

@@ -144,3 +144,23 @@ table.tbl th { color: var(--sub); font-weight: 600; font-size: 14px; }
 .bar-meter.hot > span { background: #d97706; }
 .bar-meter.full > span { background: var(--danger); }
 .histnote { white-space: pre-wrap; background: #f1f5f6; border-radius: 8px; padding: 8px 10px; font: 14px/1.5 inherit; margin: 6px 0 0; }
+
+/* 病歷總覽與列印 */
+.enc { border-bottom: 1px solid var(--line); padding: 8px 0; }
+.enc:last-child { border-bottom: 0; }
+.enc-head { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.enc summary { cursor: pointer; padding: 6px 0; }
+.enc-ver { padding: 10px 0 10px 12px; border-left: 4px solid var(--line); margin: 8px 0; }
+.print-title { display: none; }
+@media print {
+  header.bar, nav.tabs, .no-print, .sign-bar, .static-banner, .ltc-banner { display: none !important; }
+  body { background: #fff; font-size: 11pt; color: #000; }
+  #app { max-width: none; padding: 0; }
+  .print-title { display: block; margin-bottom: 8pt; }
+  .card { border: 1px solid #999; border-radius: 0; break-inside: auto; box-shadow: none; }
+  .enc { break-inside: avoid; page-break-inside: avoid; }
+  .trend { break-inside: avoid; }
+  details > summary { list-style: none; }
+  details:not([open]) > *:not(summary) { display: block; }
+  a { color: inherit; text-decoration: none; }
+}

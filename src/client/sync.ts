@@ -22,6 +22,7 @@ export const httpTransport: Transport = async (req) => {
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(req),
   });
+  if (res.status === 401) throw new Error('需要登入'); // 伺服器啟用了密碼,登入已過期
   if (!res.ok) throw new Error(`同步失敗(${res.status})`);
   return (await res.json()) as SyncResponse;
 };

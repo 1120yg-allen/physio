@@ -1,7 +1,7 @@
 // 每日備份:以 VACUUM INTO 產生一致性快照(不需停服務)。
 // 備份檔含完整特種個資,目的路徑須位於加密磁碟/NAS;另需異地或離線副本(SPEC §8)。
 // 病歷依法保存十年,本程式只新增備份檔,不自動刪除任何舊備份。
-import { copyFileSync, existsSync, mkdirSync, readdirSync, rmSync, statSync } from 'node:fs';
+import { chmodSync, copyFileSync, existsSync, mkdirSync, readdirSync, rmSync, statSync } from 'node:fs';
 import { basename, dirname, join, resolve } from 'node:path';
 import { DatabaseSync } from './sqlite';
 import { migrate, type SqliteRepo } from './db';
@@ -25,12 +25,17 @@ function taipeiClock(d: Date): string {
 
 /** 建立備份檔,回傳路徑。同日已有備份時加上時間後綴,不覆蓋既有備份。 */
 export function backupNow(repo: SqliteRepo, backupDir: string, now = new Date()): string {
-  mkdirSync(backupDir, { recursive: true });
+  mkdirSync(backupDir, { recursive: true, mode: 0o700 });
   let target = join(backupDir, `physio-${taipeiDate(now)}.sqlite`);
   if (existsSync(target)) target = join(backupDir, `physio-${taipeiDate(now)}-${taipeiClock(now)}.sqlite`);
   repo.db.exec('PRAGMA wal_checkpoint(TRUNCATE)');
   // VACUUM INTO 不支援參數綁定;路徑來自設定,單引號跳脫處理
   repo.db.exec(`VACUUM INTO '${target.replace(/'/g, "''")}'`);
+  try {
+    chmodSync(target, 0o600); // 備份含全部個案資料,僅限本機使用者讀寫
+  } catch {
+    /* 不支援時略過 */
+  }
   return target;
 }
 

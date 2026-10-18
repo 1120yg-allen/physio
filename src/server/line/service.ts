@@ -116,11 +116,18 @@ export class LineService {
   }
 }
 
+/** 提醒時刻(0–23 的整數);未設定或不合法時預設 18。注意 0 是合法值(午夜起即可發送)。 */
+export function parseHour(v: string | undefined): number {
+  if (v === undefined || v.trim() === '') return 18;
+  const n = Number(v);
+  return Number.isInteger(n) && n >= 0 && n <= 23 ? n : 18;
+}
+
 export function createLineService(repo: SqliteRepo, env: NodeJS.ProcessEnv = process.env): LineService {
   const opts: LineOptions = {
     clinicName: env.LINE_CLINIC_NAME ?? '居家物理治療',
     contact: env.LINE_CONTACT ?? null,
-    reminderHour: Math.min(23, Math.max(0, Number(env.LINE_REMINDER_HOUR ?? 18) || 18)),
+    reminderHour: parseHour(env.LINE_REMINDER_HOUR),
   };
   const token = env.LINE_CHANNEL_ACCESS_TOKEN;
   const secret = env.LINE_CHANNEL_SECRET;

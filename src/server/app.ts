@@ -7,6 +7,7 @@ import { isTableName } from '../shared/schema';
 import type { SqliteRepo } from './db';
 import type { GcalService } from './gcal/service';
 import type { LineService } from './line/service';
+import { crossSiteBlocked, hostAllowed, LOGIN_JS, LOGIN_PAGE, securityHeaders, type AccessLog, type HostPolicy, type SessionAuth } from './security';
 import { DomainError } from '../shared/validate';
 
 const MAX_BODY = 64 * 1024 * 1024;
@@ -90,21 +91,67 @@ function serveStatic(staticDir: string, urlPath: string, res: ServerResponse): v
 export interface Services {
   gcal?: GcalService;
   line?: LineService;
+  /** 設定後,所有請求須先登入(除登入頁與健康檢查) */
+  auth?: SessionAuth;
+  accessLog?: AccessLog;
+  /** 允許的 Host 名稱;未提供時不檢查(僅供測試) */
+  hosts?: HostPolicy;
 }
 
 export function createApp(repo: SqliteRepo, staticDir: string, services: Services = {}): Server {
-  const { gcal, line } = services;
+  const { gcal, line, auth, accessLog, hosts } = services;
   return createServer((req, res) => {
     void (async () => {
       try {
         const url = req.url ?? '/';
-        if (url === '/api/health' && req.method === 'GET') return sendJson(res, 200, { ok: true });
+        const path = url.split('?')[0] ?? '/';
+        const ip = req.socket.remoteAddress ?? '-';
+        res.on('finish', () => accessLog?.record(ip, req.method ?? '-', url, res.statusCode));
+        securityHeaders(res);
+
+        // 防 DNS 重綁定:只接受明列的 Host 名稱
+        if (hosts && !hostAllowed(hosts, req.headers.host)) {
+          res.writeHead(421, { 'content-type': 'text/plain; charset=utf-8' }).end('不允許的主機名稱。請用 http://127.0.0.1:埠號 開啟,或以 PHYSIO_ALLOWED_HOSTS 設定允許的網域。');
+          return;
+        }
+        // 防跨站寫入
+        const blocked = crossSiteBlocked(req);
+        if (blocked) return sendJson(res, blocked.startsWith('只接受') ? 415 : 403, { error: blocked });
+        if (url.startsWith('/api/')) res.setHeader('cache-control', 'no-store');
+
+        if (path === '/_login.js' && req.method === 'GET') return void res.writeHead(200, { 'content-type': 'text/javascript; charset=utf-8' }).end(LOGIN_JS);
+        if (path === '/api/health' && req.method === 'GET') return sendJson(res, 200, { ok: true });
+        if (path === '/api/auth/status' && req.method === 'GET') return sendJson(res, 200, { required: auth !== undefined, authenticated: auth ? auth.isAuthenticated(req) : true });
+        if (path === '/api/login' && req.method === 'POST') {
+          if (!auth) return sendJson(res, 200, { ok: true });
+          const b = JSON.parse(await readBody(req)) as { password?: unknown };
+          const r = auth.login(typeof b.password === 'string' ? b.password : '', ip);
+          if (!r.ok) {
+            await new Promise((resolve) => setTimeout(resolve, 300)); // 拖慢猜密碼
+            return sendJson(res, r.locked ? 429 : 401, { error: r.locked ? '錯誤次數過多' : '密碼不正確' });
+          }
+          res.setHeader('set-cookie', auth.cookie(r.token, req.headers['x-forwarded-proto'] === 'https'));
+          return sendJson(res, 200, { ok: true });
+        }
+        if (path === '/api/logout' && req.method === 'POST') {
+          auth?.logout(req);
+          res.setHeader('set-cookie', auth ? auth.clearCookie() : '');
+          return sendJson(res, 200, { ok: true });
+        }
+        if (auth && !auth.isAuthenticated(req)) {
+          if (path.startsWith('/api/')) return sendJson(res, 401, { error: '需要登入' });
+          res.writeHead(401, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' }).end(LOGIN_PAGE);
+          return;
+        }
         if (url === '/api/sync' && req.method === 'POST') {
           const body = parseSyncRequest(await readBody(req));
           const out = await handleSync(repo, body);
           sendJson(res, 200, out);
           // 行程有變動時,回應之後在背景推送到 Google(不阻塞裝置同步;執行中會自動略過)
-          if (body.changes.some((c) => c.table === 'appointments')) void gcal?.run();
+          if (body.changes.some((c) => c.table === 'appointments')) {
+            void gcal?.run();
+            void line?.tick(); // 新增/改期的行程若已在提醒時段內,立即排入預約提醒(不必等下一個定時掃描)
+          }
           // 裝置排入的 LINE 訊息(到達/完成/摘要/HEP):同步抵達後立即送出
           if (body.changes.some((c) => c.table === 'line_messages')) void line?.drain();
           return;
