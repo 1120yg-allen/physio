@@ -36,7 +36,14 @@ function encounterFrozenCondition(): string {
 }
 
 /** 依序執行的 migration。只能新增,不可修改既有項目。 */
-const MIGRATIONS: readonly { version: number; name: string; sql: string[] }[] = [
+interface Migration {
+  version: number;
+  name: string;
+  sql: string[];
+  run?: (db: DatabaseSync) => void;
+}
+
+const MIGRATIONS: readonly Migration[] = [
   {
     version: 1,
     name: '初始資料表(SPEC §2)',
@@ -74,6 +81,13 @@ const MIGRATIONS: readonly { version: number; name: string; sql: string[] }[] = 
            BEGIN SELECT RAISE(ABORT, '病歷資料依法保存十年,不可刪除'); END`,
       ),
     ],
+  },
+  {
+    version: 3,
+    name: '補齊新增欄位(exercises.category)',
+    sql: [],
+    // 既有資料庫補上 schema 新增、但舊版 CREATE TABLE 沒有的欄位;全新資料庫不受影響
+    run: (db) => ensureColumns(db),
   },
 ];
 
@@ -195,11 +209,24 @@ export function migrate(db: DatabaseSync): void {
     db.exec('BEGIN');
     try {
       for (const stmt of m.sql) db.exec(stmt);
+      m.run?.(db);
       db.prepare('INSERT INTO schema_migrations (version, name, applied_at) VALUES (?, ?, ?)').run(m.version, m.name, new Date().toISOString());
       db.exec('COMMIT');
     } catch (e) {
       db.exec('ROLLBACK');
       throw e;
+    }
+  }
+}
+
+/** 比對 schema 與實際資料表,缺少的欄位以 ALTER TABLE 補上(選填欄位;exercises.category 補預設值) */
+function ensureColumns(db: DatabaseSync): void {
+  for (const t of TABLES) {
+    const have = new Set((db.prepare(`PRAGMA table_info(${t.name})`).all() as { name: string }[]).map((c) => c.name));
+    for (const c of t.columns) {
+      if (have.has(c.name)) continue;
+      const dflt = t.name === 'exercises' && c.name === 'category' ? " NOT NULL DEFAULT 'exercise'" : '';
+      db.exec(`ALTER TABLE ${t.name} ADD COLUMN ${c.name} ${sqlType(c)}${dflt}`);
     }
   }
 }

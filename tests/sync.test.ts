@@ -10,7 +10,7 @@ async function device(server: SqliteRepo, label: string, startClock: string) {
   const h = await newIdb();
   let online = true;
   let n = 0;
-  const svc = new DataService({ repo: h.repo, newId: () => `${label}-${String(++n).padStart(3, '0')}`, now: fakeClock(startClock) });
+  const svc = new DataService({ repo: h.repo, newId: () => `${label}-${String(++n).padStart(3, '0')}`, now: fakeClock(startClock), enforceContent: false });
   const transport: Transport = async (req) => {
     if (!online) throw new Error('無法連線');
     // 經 JSON 來回,模擬真實網路序列化
@@ -63,6 +63,14 @@ describe('離線儲存與同步(0.4)', () => {
     const again = await d.sync();
     expect(again).toMatchObject({ ok: true, pushed: 0, needsAttention: 0 });
     expect(await server.list('patients')).toHaveLength(1);
+  });
+
+  it('自己剛推上去的資料被拉回時不算變更(避免背景同步重繪打斷輸入)', async () => {
+    const server = new SqliteRepo(':memory:');
+    const d = await device(server, 'A', '2026-10-18T09:00:00+08:00');
+    await d.svc.createPatient(patientInput);
+    const out = await d.sync();
+    expect(out).toMatchObject({ pushed: 1, pulled: 0 });
   });
 
   it('兩台裝置經 server 互相取得資料', async () => {

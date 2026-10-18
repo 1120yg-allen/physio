@@ -34,7 +34,7 @@ export async function newIdb(): Promise<RepoHandle & { repo: IdbRepo; db: IDBDat
 }
 
 export function newService(repo: Repo): DataService {
-  return new DataService({ repo, newId: seqIds(), now: fakeClock() });
+  return new DataService({ repo, newId: seqIds(), now: fakeClock(), enforceContent: false });
 }
 
 export const patientInput = {

@@ -1,6 +1,7 @@
 // client 同步:先推本機待同步資料,再拉 server 新資料。
 // 任何失敗(含無網路)都只回報狀態,絕不阻擋本機讀寫(C4)。
 import type { SyncChange, SyncRequest, SyncResponse } from '../shared/sync';
+import { rowsEqual } from '../shared/validate';
 import type { IdbRepo } from './idb';
 
 /** 傳輸層:可替換為測試用的記憶體傳輸 */
@@ -62,6 +63,9 @@ export async function runSync(repo: IdbRepo, transport: Transport): Promise<Sync
   let pulled = 0;
   for (const c of res.changes) {
     if (dirty.has(`${c.table}:${c.row.id}`)) continue;
+    // 與本機完全相同的資料(例如剛推上去又被拉回)不算變更,避免無謂的畫面重繪
+    const local = await repo.get(c.table, c.row.id);
+    if (local && rowsEqual(local, c.row)) continue;
     await repo.putSynced(c.table, c.row as never);
     pulled++;
   }

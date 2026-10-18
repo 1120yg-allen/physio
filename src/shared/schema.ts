@@ -4,6 +4,7 @@
 // 規格外新增的欄位(僅為同步與稽核基礎設施,不改變規格欄位語意):
 //   - encounters / soap_notes / ltc_records / 字典表 的 created_at、updated_at
 //   - soap_notes / ltc_records 的 encounter_id(實現「1:1 對應 Encounter」)
+//   - exercises 的 category(介入類別)
 //   - favorites 的 kind / ref_id / sort_order(規格僅描述「個人常用清單」)
 
 export type Gender = 'male' | 'female' | 'other';
@@ -110,6 +111,8 @@ export interface TestDef {
 export interface Exercise {
   id: string;
   name: string;
+  /** 介入類別(規格外新增,快速模式依類別篩選) */
+  category: 'manual' | 'exercise' | 'functional' | 'education';
   region: string | null;
   video_ref: string | null;
   default_dose: Record<string, unknown> | null;
@@ -263,6 +266,7 @@ export const TABLES: readonly TableDef[] = [
     columns: [
       { name: 'id', type: 'text', required: true },
       { name: 'name', type: 'text', required: true },
+      { name: 'category', type: 'text', required: true, enum: ['manual', 'exercise', 'functional', 'education'] },
       { name: 'region', type: 'text' },
       { name: 'video_ref', type: 'text' },
       { name: 'default_dose', type: 'json' },

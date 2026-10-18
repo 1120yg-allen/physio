@@ -37,7 +37,7 @@ describe('SQLite schema(0.2)', () => {
     migrate(repo.db);
     migrate(repo.db);
     const n = repo.db.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get() as { n: number };
-    expect(Number(n.n)).toBe(2);
+    expect(Number(n.n)).toBe(3);
   });
 
   it('JSON、布林欄位來回轉換正確', async () => {

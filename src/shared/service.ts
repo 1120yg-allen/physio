@@ -3,7 +3,9 @@
 // 本檔函式處理的皆為特種個資(個案健康資料),不得將參數或回傳值寫入 log。
 import type { Repo } from './repo';
 import { acceptRowOrThrow, assertSignable, Rejection } from './rules';
-import type { Encounter, EncounterTrack, LtcRecord, Location, Patient, SoapNote } from './schema';
+import { SEED_EXERCISES, SEED_TESTS } from './seed';
+import type { Encounter, EncounterTrack, Exercise, Favorite, Goal, LtcRecord, Location, Patient, SoapNote, TestDef } from './schema';
+import { emptySoap, parseSoap, pickPreviousEncounter, prefillFromPrevious, serializeSoap, soapMissing, type SoapContent } from './soap';
 import { nowTaipei, toTaipeiIso } from './time';
 import { DomainError } from './validate';
 
@@ -13,6 +15,8 @@ export interface ServiceDeps {
   newId?: () => string;
   /** 取得現在時間(ISO 8601 + 時區);預設台北時間 */
   now?: () => string;
+  /** 簽章時是否檢查內容完整性(自費:主訴 + 至少一項 O 內容)。預設 true */
+  enforceContent?: boolean;
 }
 
 export type NewPatientInput = Pick<Patient, 'name' | 'birth_date' | 'track' | 'referral_required'> &
@@ -38,8 +42,10 @@ export class DataService {
   private readonly repo: Repo;
   private readonly newId: () => string;
   private readonly now: () => string;
+  private readonly enforceContent: boolean;
 
   constructor(deps: ServiceDeps) {
+    this.enforceContent = deps.enforceContent ?? true;
     this.repo = deps.repo;
     this.newId = deps.newId ?? (() => crypto.randomUUID());
     this.now = deps.now ?? nowTaipei;
@@ -200,6 +206,10 @@ export class DataService {
       if (e instanceof Rejection) throw new DomainError(e.reject, e.message);
       throw e;
     }
+    if (this.enforceContent && cur.track === 'self_pay') {
+      const missing = soapMissing(parseSoap(await this.repo.getByEncounter('soap_notes', cur.id)));
+      if (missing.length > 0) throw new DomainError('incomplete', `簽章前請先填寫:${missing.join('、')}`);
+    }
     const t = this.laterThan(cur.updated_at);
     const row: Encounter = { ...cur, status: 'signed', signed_at: t, updated_at: t };
     await acceptRowOrThrow(this.repo, 'encounters', row);
@@ -274,6 +284,101 @@ export class DataService {
 
   getLtcRecord(encounterId: string): Promise<LtcRecord | null> {
     return this.repo.getByEncounter('ltc_records', encounterId);
+  }
+
+  // ───────────── 自費回診(快速模式) ─────────────
+
+  /**
+   * 開始一次自費回診:建立草稿並帶入上次治療的介入/觀察/HEP(複製上次治療)。
+   * 沒有上次紀錄時為空白 SOAP。
+   */
+  async startVisit(input: Omit<NewEncounterInput, 'track'>): Promise<{ encounter: Encounter; soap: SoapNote; prefilled: boolean }> {
+    const encounter = await this.createEncounter({ ...input, track: 'self_pay' });
+    const prev = pickPreviousEncounter(await this.repo.listEncountersByPatient(input.patient_id), encounter.id);
+    const prevNote = prev ? await this.repo.getByEncounter('soap_notes', prev.id) : null;
+    const content = prevNote ? prefillFromPrevious(parseSoap(prevNote)) : emptySoap();
+    const soap = await this.saveSoapNote(encounter.id, serializeSoap(content));
+    return { encounter, soap, prefilled: prevNote !== null };
+  }
+
+  /** 儲存結構化 SOAP 內容 */
+  saveSoapContent(encounterId: string, content: SoapContent): Promise<SoapNote> {
+    return this.saveSoapNote(encounterId, serializeSoap(content));
+  }
+
+  /** 讀取結構化 SOAP 內容(無紀錄時回傳空白結構) */
+  async getSoapContent(encounterId: string): Promise<SoapContent> {
+    return parseSoap(await this.repo.getByEncounter('soap_notes', encounterId));
+  }
+
+  /** 該個案「上一次」自費紀錄的 SOAP 內容(供顯示上次數值對照) */
+  async previousSoapContent(patientId: string, excludeEncounterId: string): Promise<{ encounter: Encounter; content: SoapContent } | null> {
+    const prev = pickPreviousEncounter(await this.repo.listEncountersByPatient(patientId), excludeEncounterId);
+    if (!prev) return null;
+    return { encounter: prev, content: await this.getSoapContent(prev.id) };
+  }
+
+  // ───────────── 字典表、目標、常用清單 ─────────────
+
+  /** 植入預設測驗庫與動作庫;已存在的項目(含使用者修改過的)不覆蓋。 */
+  async seedDictionaries(): Promise<void> {
+    for (const t of SEED_TESTS) if (!(await this.repo.get('tests', t.id))) await acceptRowOrThrow(this.repo, 'tests', t);
+    for (const e of SEED_EXERCISES) if (!(await this.repo.get('exercises', e.id))) await acceptRowOrThrow(this.repo, 'exercises', e);
+  }
+
+  listTests(): Promise<TestDef[]> {
+    return this.repo.list('tests').then((r) => r.sort((a, b) => a.code.localeCompare(b.code)));
+  }
+
+  listExercises(): Promise<Exercise[]> {
+    return this.repo.list('exercises').then((r) => r.sort((a, b) => a.name.localeCompare(b.name, 'zh-Hant')));
+  }
+
+  async createGoal(input: Pick<Goal, 'patient_id' | 'description'> & Partial<Pick<Goal, 'baseline_value' | 'target_value' | 'deadline' | 'test_id'>>): Promise<Goal> {
+    const t = this.now();
+    const row: Goal = {
+      id: this.newId(),
+      patient_id: input.patient_id,
+      description: input.description,
+      baseline_value: input.baseline_value ?? null,
+      target_value: input.target_value ?? null,
+      deadline: input.deadline ?? null,
+      test_id: input.test_id ?? null,
+      created_at: t,
+      updated_at: t,
+    };
+    await acceptRowOrThrow(this.repo, 'goals', row);
+    return row;
+  }
+
+  listGoals(patientId: string): Promise<Goal[]> {
+    return this.repo.list('goals').then((r) => r.filter((g) => g.patient_id === patientId).sort((a, b) => a.created_at.localeCompare(b.created_at)));
+  }
+
+  /**
+   * 加入/移出個人常用清單。同步協定不支援刪除,因此以固定 id + sort_order < 0 表示「已移出」,
+   * 多台裝置對同一項目的操作以最後寫入為準。
+   */
+  async setFavorite(kind: Favorite['kind'], refId: string, on: boolean): Promise<void> {
+    const id = `fav-${kind}-${refId}`;
+    const cur = await this.repo.get('favorites', id);
+    const t = this.now();
+    if (!cur && !on) return;
+    const active = (await this.listFavorites(kind)).length;
+    const row: Favorite = {
+      id,
+      kind,
+      ref_id: refId,
+      sort_order: on ? (cur && cur.sort_order >= 0 ? cur.sort_order : active) : -1,
+      created_at: cur?.created_at ?? t,
+      updated_at: cur ? this.laterThan(cur.updated_at) : t,
+    };
+    await acceptRowOrThrow(this.repo, 'favorites', row);
+  }
+
+  /** 個人常用清單(依排序),僅含啟用中的項目 */
+  async listFavorites(kind: Favorite['kind']): Promise<Favorite[]> {
+    return (await this.repo.list('favorites')).filter((f) => f.kind === kind && f.sort_order >= 0).sort((a, b) => a.sort_order - b.sort_order);
   }
 
   // ───────────── 內部 ─────────────

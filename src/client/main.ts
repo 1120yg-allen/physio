@@ -1,10 +1,15 @@
 import './style.css';
 import { DataService } from '../shared/service';
+import type { CutoffData } from '../shared/norms';
 import type { Encounter, EncounterTrack, Gender, Location, Patient, Track } from '../shared/schema';
-import { todayTaipei, timeNowTaipei } from '../shared/time';
+import { goalProgressFor, testsUsedBy, trendFor } from '../shared/trend';
+import { nowTaipei, todayTaipei, timeNowTaipei } from '../shared/time';
 import { DomainError } from '../shared/validate';
 import { h } from './dom';
+import { trendChart } from './chart';
 import { IdbRepo, openPhysioDb } from './idb';
+import { soapForm, type FormMode } from './soapform';
+import { soapReadonly } from './soapview';
 import { httpTransport, runSync, type SyncOutcome } from './sync';
 
 const TRACK_LABEL: Record<Track, string> = { self_pay: '自費', ltc: '長照', both: '自費+長照' };
@@ -15,6 +20,46 @@ const LOC_LABEL: Record<Location, string> = { home: '居家', facility: '機構'
 let repo: IdbRepo;
 let svc: DataService;
 const app = document.getElementById('app') as HTMLElement;
+
+// ───────────── 90 秒計時(TASKS 1.5):只存秒數與模式,不含任何個案資料 ─────────────
+
+interface Timing { seconds: number; mode: FormMode; at: string }
+
+function lsGet<T>(key: string, fallback: T): T {
+  try {
+    const raw = localStorage.getItem(key);
+    return raw ? (JSON.parse(raw) as T) : fallback;
+  } catch {
+    return fallback;
+  }
+}
+function lsSet(key: string, value: unknown): void {
+  try {
+    localStorage.setItem(key, JSON.stringify(value));
+  } catch {
+    /* 無痕模式等無法寫入時略過,不影響主功能 */
+  }
+}
+const visitStartKey = 'physio.visitStart';
+function markVisitStart(encounterId: string): void {
+  lsSet(visitStartKey, { ...lsGet<Record<string, number>>(visitStartKey, {}), [encounterId]: Date.now() });
+}
+function recordTiming(encounterId: string, mode: FormMode): void {
+  const starts = lsGet<Record<string, number>>(visitStartKey, {});
+  const t0 = starts[encounterId];
+  if (t0 === undefined) return;
+  delete starts[encounterId];
+  lsSet(visitStartKey, starts);
+  const list = lsGet<Timing[]>('physio.timings', []);
+  list.push({ seconds: Math.round((Date.now() - t0) / 1000), mode, at: nowTaipei() });
+  lsSet('physio.timings', list.slice(-50));
+}
+function timingSummary(): string | null {
+  const q = lsGet<Timing[]>('physio.timings', []).filter((t) => t.mode === 'quick').slice(-10);
+  if (q.length === 0) return null;
+  const avg = Math.round(q.reduce((a, t) => a + t.seconds, 0) / q.length);
+  return `快速模式最近 ${q.length} 次簽章平均 ${avg} 秒(目標 ≤ 90 秒)`;
+}
 
 // ───────────── 同步狀態列 ─────────────
 
@@ -48,7 +93,8 @@ async function doSync(): Promise<void> {
     syncing = false;
     await refreshStatus();
   }
-  if (lastSync?.ok && lastSync.pulled > 0) await render();
+  // 編輯中的畫面(表單、草稿紀錄)不可被背景同步重繪,否則會清掉使用者正在輸入的內容
+  if (lastSync?.ok && lastSync.pulled > 0 && !editingView) await render();
 }
 
 // ───────────── 路由 ─────────────
@@ -73,7 +119,11 @@ function describeError(e: unknown): string {
   return e instanceof DomainError ? e.message : '發生未預期的錯誤,資料未儲存';
 }
 
+/** 目前畫面是否為編輯中(背景同步不得重繪) */
+let editingView = false;
+
 async function render(): Promise<void> {
+  editingView = false;
   const parts = location.hash.replace(/^#\/?/, '').split('/').filter(Boolean);
   try {
     if (parts[0] === 'patient' && parts[1] === 'new') return await viewPatientForm(null);
@@ -100,6 +150,7 @@ async function viewPatientList(query = '', includeArchived = false): Promise<voi
   layout('個案', [
     h('div', { className: 'row' }, h('div', { className: 'grow' }, search), h('a', { className: 'btn primary', href: '#/patient/new' }, '＋ 新增個案')),
     h('label', { className: 'muted' }, archived, ' 顯示已結案'),
+    timingSummary() ? h('p', { className: 'muted' }, timingSummary() as string) : null,
     h('div', { className: 'card list' },
       list.length === 0 ? h('p', { className: 'muted' }, '尚無個案。按「新增個案」開始。') : null,
       list.map((p) =>
@@ -119,6 +170,7 @@ async function viewPatientList(query = '', includeArchived = false): Promise<voi
 // ───────────── 個案表單 ─────────────
 
 async function viewPatientForm(id: string | null): Promise<void> {
+  editingView = true;
   const cur = id ? await svc.getPatient(id) : null;
   if (id && !cur) throw new DomainError('not_found', '找不到個案');
 
@@ -199,8 +251,8 @@ async function viewPatientForm(id: string | null): Promise<void> {
 
 // ───────────── 個案詳情 ─────────────
 
-function precautionsBox(p: Patient): HTMLElement | null {
-  return p.precautions ? h('div', { className: 'precautions', role: 'alert' }, h('b', null, '⚠ 禁忌症與注意事項'), p.precautions) : null;
+function precautionsBox(p: Patient, sticky = false): HTMLElement | null {
+  return p.precautions ? h('div', { className: `precautions${sticky ? ' sticky-warn' : ''}`, role: 'alert' }, h('b', null, '⚠ 禁忌症與注意事項'), p.precautions) : null;
 }
 
 async function viewPatient(id: string): Promise<void> {
@@ -208,7 +260,10 @@ async function viewPatient(id: string): Promise<void> {
   if (!p) throw new DomainError('not_found', '找不到個案');
   const encs = await svc.listEncounters(id);
   const superseded = new Set(encs.map((e) => e.supersedes_id).filter(Boolean));
+  const tests = await svc.listTests();
+  const goals = await svc.listGoals(id);
   const msg = h('div');
+  const canSelfPay = p.track !== 'ltc';
 
   const date = h('input', { type: 'date', value: todayTaipei() });
   const start = h('input', { type: 'time', value: timeNowTaipei() });
@@ -231,6 +286,57 @@ async function viewPatient(id: string): Promise<void> {
     }
   };
 
+  /** 開始自費回診:建立草稿並帶入上次治療,計時開始 */
+  const startVisit = async (): Promise<void> => {
+    msg.replaceChildren();
+    try {
+      const { encounter, prefilled } = await svc.startVisit({ patient_id: p.id, service_date: todayTaipei(), start_time: timeNowTaipei(), end_time: timeNowTaipei() });
+      markVisitStart(encounter.id);
+      lsSet(`physio.mode.${encounter.id}`, prefilled ? 'quick' : 'full');
+      void doSync();
+      location.hash = `#/encounter/${encounter.id}`;
+    } catch (err) {
+      msg.replaceChildren(errorBox(describeError(err)));
+    }
+  };
+
+  // 目標
+  const goalLines: HTMLElement[] = [];
+  for (const g of goals) {
+    const { current, pct } = await goalProgressFor(repo, g);
+    const t = tests.find((x) => x.id === g.test_id);
+    goalLines.push(h('div', { className: 'version' },
+      h('strong', null, g.description),
+      h('div', { className: 'muted' }, `${t ? t.name : '未關聯測驗'}:基準 ${g.baseline_value ?? '–'} → 目前 ${current ?? '–'} → 目標 ${g.target_value ?? '–'}${pct === null ? '' : `(達成 ${pct}%)`}${g.deadline ? `;期限 ${g.deadline}` : ''}`)));
+  }
+  const gDesc = h('input', { placeholder: '例:TUG 降到 10 秒以內', lang: 'zh-TW' });
+  const gTest = h('select', null, h('option', { value: '' }, '關聯測驗(選填)'), tests.map((t) => h('option', { value: t.id }, t.name)));
+  const gBase = h('input', { type: 'text', inputMode: 'decimal', placeholder: '基準值' });
+  const gTarget = h('input', { type: 'text', inputMode: 'decimal', placeholder: '目標值' });
+  const gDate = h('input', { type: 'date' });
+  const addGoal = async (): Promise<void> => {
+    msg.replaceChildren();
+    try {
+      const num = (v: string): number | null => (v.trim() === '' || Number.isNaN(Number(v)) ? null : Number(v));
+      await svc.createGoal({ patient_id: p.id, description: gDesc.value.trim(), baseline_value: num(gBase.value), target_value: num(gTarget.value), deadline: gDate.value || null, test_id: gTest.value || null });
+      void doSync();
+      await render();
+    } catch (err) {
+      msg.replaceChildren(errorBox(describeError(err)));
+    }
+  };
+
+  // 趨勢圖(同一測驗跨次數)
+  const charts: HTMLElement[] = [];
+  for (const tid of await testsUsedBy(repo, id)) {
+    const t = tests.find((x) => x.id === tid);
+    if (!t) continue;
+    const pts = await trendFor(repo, id, tid);
+    if (pts.length === 0) continue;
+    const cut = t.cutoffs as unknown as CutoffData | null;
+    charts.push(trendChart(t, pts, cut ? { value: cut.value, label: '切點' } : undefined));
+  }
+
   layout(p.name, [
     precautionsBox(p),
     h('div', { className: 'card' },
@@ -245,13 +351,31 @@ async function viewPatient(id: string): Promise<void> {
           : h('button', { className: 'danger', onclick: () => { if (confirm('確定結案?資料會保留,不會刪除。')) void svc.archivePatient(p.id).then(() => { void doSync(); return render(); }); } }, '結案'),
       ),
     ),
-    p.archived_at ? null : h('div', { className: 'card' },
-      h('h2', null, '新增空白服務紀錄'),
+    p.archived_at || !canSelfPay ? null : h('div', { className: 'card' },
+      h('button', { className: 'primary', onclick: () => void startVisit() }, '▶ 開始自費回診(快速模式)'),
+      h('p', { className: 'muted' }, '會自動帶入上次治療的介入與居家運動處方,只需校對差異點。'),
+      msg,
+    ),
+    p.archived_at ? null : h('details', { className: 'card' },
+      h('summary', null, '新增空白服務紀錄(補登/長照)'),
       h('div', { className: 'grid2' }, h('div', null, h('label', { className: 'f' }, '日期'), date), h('div', null, h('label', { className: 'f' }, '軌別'), trackSel)),
       h('div', { className: 'grid2' }, h('div', null, h('label', { className: 'f' }, '開始'), start), h('div', null, h('label', { className: 'f' }, '結束'), end)),
-      msg,
+      canSelfPay ? null : msg,
       h('p', null, h('button', { className: 'primary', onclick: () => void create() }, '建立')),
     ),
+    h('div', { className: 'card' },
+      h('h2', null, '治療目標'),
+      goalLines.length === 0 ? h('p', { className: 'muted' }, '尚未設定目標。') : null,
+      ...goalLines,
+      h('details', null,
+        h('summary', null, '＋ 新增目標'),
+        field2('目標描述', gDesc),
+        field2('關聯測驗', gTest),
+        h('div', { className: 'grid3' }, field2('基準值', gBase), field2('目標值', gTarget), field2('期限', gDate)),
+        h('p', null, h('button', { onclick: () => void addGoal() }, '儲存目標')),
+      ),
+    ),
+    charts.length ? h('div', { className: 'card' }, h('h2', null, '測驗趨勢'), ...charts) : null,
     h('div', { className: 'card list' },
       h('h2', null, `服務紀錄(${encs.length})`),
       encs.length === 0 ? h('p', { className: 'muted' }, '尚無紀錄') : null,
@@ -269,6 +393,37 @@ async function viewPatient(id: string): Promise<void> {
   await refreshStatus();
 }
 
+function minutesBetween(a: string, b: string): number | null {
+  const [ah, am] = a.split(':').map(Number);
+  const [bh, bm] = b.split(':').map(Number);
+  if (ah === undefined || am === undefined || bh === undefined || bm === undefined) return null;
+  const d = bh * 60 + bm - (ah * 60 + am);
+  return d > 0 ? d : null;
+}
+
+/**
+ * 一鍵設定療程時長:結束 = 現在,開始 = 現在 − N 分。由治療師明確點選,系統不會自行猜測時間。
+ * (到宅療程通常在個案還在現場時就寫紀錄,「開始」多半早於按下開始回診的時刻)
+ */
+function durationChips(start: HTMLInputElement, end: HTMLInputElement, prevMinutes: number | null): HTMLElement {
+  const apply = (min: number): void => {
+    const now = timeNowTaipei();
+    const [hh, mm] = now.split(':').map(Number) as [number, number];
+    const total = Math.max(0, hh * 60 + mm - min);
+    start.value = `${String(Math.floor(total / 60)).padStart(2, '0')}:${String(total % 60).padStart(2, '0')}`;
+    end.value = now;
+  };
+  const opts = [...new Set([30, 45, 60, ...(prevMinutes ? [prevMinutes] : [])])].sort((x, y) => x - y);
+  return h('div', null,
+    h('label', { className: 'f' }, '一鍵設定療程時長(結束 = 現在)'),
+    h('div', { className: 'chips' }, opts.map((m) => h('button', { type: 'button', className: 'chip', onclick: () => apply(m) }, m === prevMinutes ? `${m} 分鐘(同上次)` : `${m} 分鐘`))),
+  );
+}
+
+function field2(label: string, el: Node): HTMLElement {
+  return h('div', null, h('label', { className: 'f' }, label), el);
+}
+
 // ───────────── 服務紀錄 ─────────────
 
 async function viewEncounter(id: string): Promise<void> {
@@ -280,6 +435,10 @@ async function viewEncounter(id: string): Promise<void> {
   const latest = chain[chain.length - 1] as Encounter;
   const locked = e.signed_at !== null;
   const msg = h('div');
+  const tests = await svc.listTests();
+  const exercises = await svc.listExercises();
+  const prevEnc = e.track === 'self_pay' ? await svc.previousSoapContent(p.id, e.id) : null;
+  const prevDurationMinutes = prevEnc ? minutesBetween(prevEnc.encounter.start_time, prevEnc.encounter.end_time) : null;
 
   const date = h('input', { type: 'date', value: e.service_date, disabled: locked });
   const start = h('input', { type: 'time', value: e.start_time, disabled: locked });
@@ -301,38 +460,143 @@ async function viewEncounter(id: string): Promise<void> {
   const saveMeta = (): Promise<Encounter> =>
     svc.updateEncounter(e.id, { service_date: date.value, start_time: start.value, end_time: end.value, location: (loc.value || null) as Location | null, service_code: code.value.trim() || null });
 
+  const metaCard = h('details', { className: 'card', open: e.track === 'ltc' || locked || e.end_time <= e.start_time },
+    h('summary', null, `服務時間與地點:${e.service_date} ${e.start_time}–${e.end_time}`),
+    h('div', { className: 'grid2' }, h('div', null, h('label', { className: 'f' }, '日期'), date), h('div', null, h('label', { className: 'f' }, '地點'), loc)),
+    h('div', { className: 'grid2' }, h('div', null, h('label', { className: 'f' }, '開始'), start), h('div', null, h('label', { className: 'f' }, '結束'), end)),
+    h('label', { className: 'f' }, '服務代碼'), code,
+    locked || e.track !== 'self_pay' ? null : durationChips(start, end, prevDurationMinutes),
+  );
+
+  const statusRow = h('div', { className: 'row' },
+    h('span', { className: `badge ${e.status}` }, STATUS_LABEL[e.status]), h('span', { className: 'badge' }, ETRACK_LABEL[e.track]), h('span', { className: 'badge' }, `版本 v${e.version}`),
+    e.id !== latest.id ? h('a', { className: 'btn', href: `#/encounter/${latest.id}` }, '前往最新版本') : null);
+
+  const versionCard = h('div', { className: 'card' },
+    h('h2', null, '版本軌跡'),
+    chain.slice().reverse().map((v) =>
+      h('div', { className: `version${v.id === e.id ? ' cur' : ''}` },
+        h('a', { href: `#/encounter/${v.id}` }, `v${v.version}`), ` · ${STATUS_LABEL[v.status]}`,
+        h('div', { className: 'muted' }, `建立 ${v.created_at}${v.signed_at ? `\n簽章 ${v.signed_at}` : ''}`),
+      ),
+    ),
+  );
+
+  const reviseBtn = locked && e.id === latest.id && e.status === 'signed'
+    ? h('button', { className: 'primary', onclick: () => void run(async () => { const n = await svc.reviseEncounter(e.id); location.hash = `#/encounter/${n.id}`; }) }, '建立新版本以修改')
+    : null;
+
+  // ── 已簽章:唯讀 ──
+  if (locked) {
+    const body: (Node | null)[] = [
+      precautionsBox(p, true),
+      h('div', { className: 'card' }, statusRow, h('p', { className: 'muted' }, `已於 ${e.signed_at} 簽章鎖定,不可直接修改。如需更正請建立新版本,原版本會完整保留。`), msg, reviseBtn),
+      metaCard,
+      e.track === 'self_pay' ? soapReadonly(await svc.getSoapContent(e.id), tests, exercises) : null,
+      versionCard,
+    ];
+    layout(`${p.name} ${e.service_date}`, body, `#/patient/${p.id}`);
+    await refreshStatus();
+    return;
+  }
+
+  // ── 長照草稿(P3 前僅有時間欄位) ──
+  if (e.track !== 'self_pay') {
+    editingView = true;
+    layout(`${p.name} ${e.service_date}`, [
+      precautionsBox(p, true),
+      h('div', { className: 'card' }, statusRow, msg,
+        h('div', { className: 'row' },
+          h('button', { onclick: () => void run(async () => { await saveMeta(); await render(); }) }, '儲存草稿'),
+          h('button', { className: 'primary', onclick: () => void run(async () => { await saveMeta(); await svc.signEncounter(e.id); await render(); }) }, '簽章鎖定'))),
+      metaCard,
+      h('p', { className: 'muted' }, '長照申報欄位將於 P3 加入。'),
+      versionCard,
+    ], `#/patient/${p.id}`);
+    await refreshStatus();
+    return;
+  }
+
+  // ── 自費草稿:SOAP 表單 ──
+  editingView = true;
+  const mode: FormMode = lsGet<FormMode>(`physio.mode.${e.id}`, e.version > 1 ? 'quick' : 'full');
+  const prev = prevEnc;
+  const goals = await svc.listGoals(p.id);
+  const goalLatest = new Map<string, number | null>();
+  for (const g of goals) {
+    if (!g.test_id) continue;
+    const pts = (await trendFor(repo, p.id, g.test_id)).filter((x) => x.encounter_id !== e.id);
+    goalLatest.set(g.id, pts.length ? (pts[pts.length - 1] as { value: number }).value : null);
+  }
+  const saveState = h('span', { className: 'saved' }, '');
+  const form = soapForm({
+    svc, patient: p, encounter: e, mode,
+    initial: await svc.getSoapContent(e.id), prev: prev?.content ?? null,
+    tests, exercises, goals, goalLatest,
+    favTests: (await svc.listFavorites('test')).map((f) => f.ref_id),
+    favExercises: (await svc.listFavorites('exercise')).map((f) => f.ref_id),
+    onSaveState: (st, m) => {
+      saveState.textContent = st === 'saving' ? '儲存中…' : st === 'saved' ? '已自動儲存(本機)' : `儲存失敗:${m ?? ''}`;
+      saveState.style.color = st === 'error' ? 'var(--danger)' : '';
+    },
+  });
+
+  const started = lsGet<Record<string, number>>(visitStartKey, {})[e.id];
+  const timerEl = h('span', { className: 'badge timer' }, '');
+  if (started !== undefined) {
+    const tick = (): void => {
+      if (!timerEl.isConnected) return;
+      const sec = Math.round((Date.now() - started) / 1000);
+      timerEl.textContent = `已用 ${Math.floor(sec / 60)}:${String(sec % 60).padStart(2, '0')}`;
+      setTimeout(tick, 1000);
+    };
+    tick();
+  }
+
+  const setMode = async (m: FormMode): Promise<void> => {
+    await form.flush();
+    lsSet(`physio.mode.${e.id}`, m);
+    await render();
+  };
+
+  const sign = (): Promise<void> =>
+    run(async () => {
+      await form.flush();
+      await saveMeta(); // 使用者在「時間與地點」改的時間一併儲存
+      const cur = await svc.getEncounter(e.id);
+      if (cur && cur.end_time <= cur.start_time && timeNowTaipei() > cur.start_time) await svc.updateEncounter(e.id, { end_time: timeNowTaipei() });
+      try {
+        await svc.signEncounter(e.id);
+      } catch (err) {
+        if (err instanceof DomainError && err.message.includes('結束時間')) {
+          metaCard.open = true; // 引導使用者到該改的欄位
+          metaCard.scrollIntoView({ block: 'center' });
+        }
+        throw err;
+      }
+      recordTiming(e.id, mode);
+      await render();
+    });
+
   layout(`${p.name} ${e.service_date}`, [
-    precautionsBox(p),
+    precautionsBox(p, true),
     h('div', { className: 'card' },
+      statusRow,
       h('div', { className: 'row' },
-        h('span', { className: `badge ${e.status}` }, STATUS_LABEL[e.status]), h('span', { className: 'badge' }, ETRACK_LABEL[e.track]), h('span', { className: 'badge' }, `版本 v${e.version}`),
-        e.id !== latest.id ? h('a', { className: 'btn', href: `#/encounter/${latest.id}` }, '前往最新版本') : null),
-      locked ? h('p', { className: 'muted' }, `已於 ${e.signed_at} 簽章鎖定,不可直接修改。如需更正請建立新版本,原版本會完整保留。`) : null,
-      h('div', { className: 'grid2' }, h('div', null, h('label', { className: 'f' }, '日期'), date), h('div', null, h('label', { className: 'f' }, '地點'), loc)),
-      h('div', { className: 'grid2' }, h('div', null, h('label', { className: 'f' }, '開始'), start), h('div', null, h('label', { className: 'f' }, '結束'), end)),
-      h('label', { className: 'f' }, '服務代碼'), code,
-      msg,
-      h('div', { className: 'row' },
-        locked
-          ? (e.id === latest.id && e.status === 'signed'
-              ? h('button', { className: 'primary', onclick: () => void run(async () => { const n = await svc.reviseEncounter(e.id); location.hash = `#/encounter/${n.id}`; }) }, '建立新版本以修改')
-              : null)
-          : [
-              h('button', { onclick: () => void run(async () => { await saveMeta(); await render(); }) }, '儲存草稿'),
-              h('button', { className: 'primary', onclick: () => void run(async () => { await saveMeta(); await svc.signEncounter(e.id); await render(); }) }, '簽章鎖定'),
-            ],
-      ),
+        h('div', { className: 'seg grow' },
+          h('button', { className: mode === 'quick' ? 'on' : '', onclick: () => void setMode('quick') }, '快速模式'),
+          h('button', { className: mode === 'full' ? 'on' : '', onclick: () => void setMode('full') }, '完整模式')),
+        timerEl, saveState),
+      e.version > 1 ? h('p', { className: 'muted' }, `這是 v${e.version}(更正版),已帶入前一版內容。簽章後原版本仍完整保留。`) : null,
+      prev ? h('p', { className: 'muted' }, `已帶入 ${prev.encounter.service_date} 的介入與居家運動處方;請校對差異點。`) : null,
     ),
-    h('div', { className: 'card' },
-      h('h2', null, '版本軌跡'),
-      chain.slice().reverse().map((v) =>
-        h('div', { className: `version${v.id === e.id ? ' cur' : ''}` },
-          h('a', { href: `#/encounter/${v.id}` }, `v${v.version}`), ` · ${STATUS_LABEL[v.status]}`,
-          h('div', { className: 'muted' }, `建立 ${v.created_at}${v.signed_at ? `\n簽章 ${v.signed_at}` : ''}`),
-        ),
-      ),
-    ),
-    h('p', { className: 'muted' }, 'SOAP / 長照申報欄位將於後續階段(P1 / P3)加入。'),
+    metaCard,
+    form.el,
+    msg,
+    h('div', { className: 'sign-bar' },
+      h('button', { onclick: () => void run(async () => { await form.flush(); await saveMeta(); await render(); }) }, '儲存'),
+      h('button', { className: 'primary', onclick: () => void sign() }, '簽章鎖定')),
+    versionCard,
   ], `#/patient/${p.id}`);
   await refreshStatus();
 }
@@ -343,6 +607,7 @@ async function main(): Promise<void> {
   const db = await openPhysioDb();
   repo = new IdbRepo(db);
   svc = new DataService({ repo });
+  await svc.seedDictionaries();
 
   window.addEventListener('hashchange', () => void render());
   window.addEventListener('online', () => void doSync());

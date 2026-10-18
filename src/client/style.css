@@ -44,3 +44,64 @@ input[type=checkbox] { width: 24px; min-height: 24px; }
 .version:last-child { border: 0; }
 .version.cur { font-weight: 600; }
 .version .muted { white-space: pre-line; }
+
+/* 人形圖 */
+.bodymap-figs { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; max-width: 520px; }
+.bodymap { width: 100%; height: auto; touch-action: manipulation; }
+.bm-body { fill: #e8eff2; stroke: var(--line); stroke-width: 1.5; }
+.bm-limb { fill: none; stroke: #e8eff2; stroke-width: 18; stroke-linecap: round; stroke-linejoin: round; }
+.bm-region { fill: #fff; fill-opacity: .55; stroke: #9fb2ba; stroke-width: 1.5; cursor: pointer; }
+.bm-region:hover, .bm-region:focus { stroke: var(--brand); outline: none; }
+.bm-region.on { fill: #ef6c4d; fill-opacity: .8; stroke: #b4351a; stroke-width: 2.5; }
+.bm-cap { font-size: 11px; fill: var(--sub); }
+.chips { display: flex; flex-wrap: wrap; gap: 8px; margin: 8px 0; align-items: center; }
+.chip { min-height: 44px; padding: 4px 14px; border-radius: 999px; border: 1px solid var(--line); background: #fff; font: inherit; font-size: 16px; cursor: pointer; }
+.chip.on { background: var(--brand); border-color: var(--brand); color: #fff; }
+.chip.fav { border-color: var(--brand); color: var(--brand); }
+
+/* 趨勢圖 */
+.trend { margin: 12px 0 20px; }
+.trend-head { display: flex; gap: 12px; align-items: baseline; flex-wrap: wrap; }
+.trend-plot { position: relative; }
+.trend-svg { width: 100%; height: auto; display: block; }
+.tc-grid { stroke: var(--line); stroke-width: 1; }
+.tc-axis { fill: var(--sub); font-size: 12px; }
+.tc-ref { stroke: var(--sub); stroke-width: 1.5; stroke-dasharray: 5 4; }
+.tc-line { fill: none; stroke: var(--brand); stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
+.tc-dot { fill: var(--brand); stroke: var(--card); stroke-width: 2; }
+.tc-hit { fill: transparent; }
+.tc-pt { outline: none; cursor: pointer; }
+.tc-pt:focus .tc-dot, .tc-pt:hover .tc-dot { r: 7; }
+.tc-last { fill: var(--ink); font-size: 13px; font-weight: 600; }
+.tc-tip { position: absolute; transform: translate(-50%, -100%); background: var(--ink); color: #fff; font-size: 14px; padding: 4px 10px; border-radius: 8px; pointer-events: none; white-space: nowrap; }
+.trend-table table { border-collapse: collapse; margin-top: 6px; }
+.trend-table th, .trend-table td { padding: 4px 14px 4px 0; text-align: left; font-size: 15px; }
+
+/* SOAP 表單 */
+.sticky-warn { position: sticky; top: 56px; z-index: 4; }
+.sec { border-left: 6px solid var(--brand); padding-left: 12px; }
+.sec h2 { display: flex; align-items: center; gap: 8px; }
+.sec h2 .tag { background: var(--brand); color: #fff; border-radius: 8px; padding: 0 10px; font-size: 16px; }
+.seg { display: flex; gap: 8px; flex-wrap: wrap; }
+.seg button { flex: 1; }
+.seg button.on { background: var(--brand); border-color: var(--brand); color: #fff; }
+.nprs { display: flex; align-items: center; gap: 14px; }
+.nprs input[type=range] { flex: 1; min-height: 56px; padding: 0; }
+.nprs output { min-width: 3ch; font-size: 32px; font-weight: 700; text-align: center; }
+.stepper { display: inline-flex; align-items: center; gap: 10px; }
+.stepper button { width: 56px; font-size: 24px; }
+.stepper output { min-width: 3ch; text-align: center; font-size: 24px; font-weight: 600; }
+.irow { border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; margin: 8px 0; background: #fbfdfe; }
+.irow .top { display: flex; gap: 8px; align-items: center; }
+.irow .top .nm { flex: 1; font-weight: 600; }
+.irow .dose { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin-top: 8px; }
+.irow .dose input { min-height: 44px; padding: 4px 8px; }
+.irow .dose label { font-size: 13px; color: var(--sub); display: block; }
+.timer { font-variant-numeric: tabular-nums; }
+.ref { font-size: 14px; color: var(--sub); margin-top: 2px; }
+.sign-bar { position: sticky; bottom: 0; background: linear-gradient(transparent, var(--bg) 30%); padding: 20px 0 calc(8px + env(safe-area-inset-bottom)); display: flex; gap: 10px; }
+.sign-bar .primary { flex: 1; min-height: 60px; font-size: 20px; }
+.ro dt { color: var(--sub); font-size: 14px; margin-top: 10px; }
+.ro dd { margin: 0; white-space: pre-wrap; }
+.saved { font-size: 14px; color: var(--ok); }
+@media (max-width: 520px) { .irow .dose { grid-template-columns: 1fr 1fr; } }
