@@ -143,3 +143,4 @@ table.tbl th { color: var(--sub); font-weight: 600; font-size: 14px; }
 .bar-meter > span { display: block; height: 100%; background: var(--brand); }
 .bar-meter.hot > span { background: #d97706; }
 .bar-meter.full > span { background: var(--danger); }
+.histnote { white-space: pre-wrap; background: #f1f5f6; border-radius: 8px; padding: 8px 10px; font: 14px/1.5 inherit; margin: 6px 0 0; }

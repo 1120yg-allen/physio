@@ -16,6 +16,7 @@ import { ltcDraftForm, ltcLockedCard } from './ltcform';
 import { canCorrect } from '../shared/ltc';
 import { scheduleViews, type ViewCtx } from './schedule';
 import { ltcBanner, ltcViews } from './ltcview';
+import { resetImport, viewImport } from './importwizard';
 import { encounterLineCard, patientLineCard, viewLibrary } from './linecard';
 import { httpTransport, runSync, type SyncOutcome } from './sync';
 
@@ -148,6 +149,7 @@ async function render(): Promise<void> {
   editingView = false;
   const parts = location.hash.replace(/^#\/?/, '').split('/').filter(Boolean);
   try {
+    if (parts[0] === 'import') return await viewImport(viewCtx);
     if (parts[0] === 'ltc') {
       if (parts[1] === 'settings') return await ltc.viewLtcSettings(parts[2] ?? null);
       return await ltc.viewLtc(parts[1] && /^\d{4}-\d{2}$/.test(parts[1]) ? parts[1] : null);
@@ -197,7 +199,7 @@ async function viewPatientList(query = '', includeArchived = false): Promise<voi
         ),
       ),
     ),
-    h('p', { className: 'muted' }, h('a', { href: '#/backup' }, '備份與還原'), `(${lastBackupLabel()})`),
+    h('p', { className: 'muted' }, h('a', { href: '#/import', onclick: () => resetImport() }, '匯入既有資料(Excel/CSV)'), ' · ', h('a', { href: '#/backup' }, '備份與還原'), `(${lastBackupLabel()})`),
   ]);
   await refreshStatus();
 }
@@ -380,6 +382,7 @@ async function viewPatient(id: string): Promise<void> {
         h('a', { className: 'btn', href: `#/patient/${p.id}/edit` }, '編輯')),
       h('p', { className: 'muted' }, [`生日 ${p.birth_date}`, p.phone, p.address].filter(Boolean).join(' · ')),
       p.emergency_contact ? h('p', { className: 'muted' }, `緊急聯絡人:${p.emergency_contact.name}(${p.emergency_contact.relation}) ${p.emergency_contact.phone}`) : null,
+      p.history_note ? h('details', null, h('summary', null, '歷史備註(匯入的原文)'), h('pre', { className: 'histnote' }, p.history_note)) : null,
       h('div', { className: 'row' },
         p.archived_at
           ? h('button', { onclick: () => void svc.reopenPatient(p.id).then(() => { void doSync(); return render(); }) }, '重新開案')
