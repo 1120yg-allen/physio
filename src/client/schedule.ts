@@ -6,6 +6,7 @@ import type { DataService } from '../shared/service';
 import { todayTaipei } from '../shared/time';
 import { DomainError } from '../shared/validate';
 import { h } from './dom';
+import { STATIC_MODE } from './env';
 
 export interface ViewCtx {
   svc: DataService;
@@ -34,6 +35,7 @@ interface GcalStatus {
 }
 
 async function fetchGcalStatus(): Promise<GcalStatus | null> {
+  if (STATIC_MODE) return null;
   try {
     const res = await fetch('/api/gcal/status', { signal: AbortSignal.timeout(3000) });
     return res.ok ? ((await res.json()) as GcalStatus) : null;
@@ -140,7 +142,7 @@ export function scheduleViews(ctx: ViewCtx): {
     const paintGcal = (g: GcalStatus | null): void => {
       gcalLine.replaceChildren(
         g === null
-          ? 'Google 行事曆:無法取得狀態(離線或服務未啟動)'
+          ? (STATIC_MODE ? 'Google 行事曆同步:純本機版無法使用,請在自己的電腦執行 npm start' : 'Google 行事曆:無法取得狀態(離線或服務未啟動)')
           : !g.enabled
             ? `Google 行事曆同步:未啟用${g.reason ? `(${g.reason})` : ''}`
             : `Google 行事曆同步:已啟用(隱私等級 ${g.privacy === 'full' ? '完整' : '最小'})${g.last_run_at ? `;上次 ${g.last_run_at.slice(0, 16).replace('T', ' ')} ${g.last_ok ? '成功' : `失敗:${g.last_error ?? ''}`}` : ''}`,

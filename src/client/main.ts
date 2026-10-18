@@ -7,6 +7,8 @@ import { nowTaipei, todayTaipei, timeNowTaipei } from '../shared/time';
 import { DomainError } from '../shared/validate';
 import { h } from './dom';
 import { trendChart } from './chart';
+import { STATIC_MODE, STATIC_NOTICE } from './env';
+import { backupView, lastBackupLabel } from './backup';
 import { IdbRepo, openPhysioDb } from './idb';
 import { soapForm, type FormMode } from './soapform';
 import { soapReadonly } from './soapview';
@@ -72,6 +74,11 @@ let syncing = false;
 const statusEl = h('span', { className: 'status' });
 
 async function refreshStatus(): Promise<void> {
+  if (STATIC_MODE) {
+    statusEl.className = 'status offline';
+    statusEl.textContent = '純本機';
+    return;
+  }
   const pending = (await repo.listOutbox()).filter((i) => !i.rejected).length;
   const attn = (await repo.listOutbox()).filter((i) => i.rejected).length;
   const offline = !navigator.onLine || (lastSync !== null && !lastSync.ok);
@@ -88,6 +95,7 @@ async function refreshStatus(): Promise<void> {
 }
 
 async function doSync(): Promise<void> {
+  if (STATIC_MODE) return; // 純本機版沒有伺服器可同步
   if (syncing) return;
   syncing = true;
   await refreshStatus();
@@ -113,6 +121,7 @@ function layout(title: string, body: (Node | null)[], back?: string): void {
       statusEl,
       h('button', { onclick: () => void doSync() }, '同步'),
     ),
+    STATIC_MODE ? h('div', { className: 'precautions static-banner' }, h('b', null, 'ℹ 純本機版'), `${STATIC_NOTICE} `, h('a', { href: '#/backup' }, '匯出備份'), `(${lastBackupLabel()})`) : null,
     back ? null : h('nav', { className: 'tabs' }, h('a', { href: '#/', className: inSchedule || inLibrary ? '' : 'on' }, '個案'), h('a', { href: '#/schedule', className: inSchedule ? 'on' : '' }, '排程'), h('a', { href: '#/library', className: inLibrary ? 'on' : '' }, '動作庫')),
     ...body,
   ];
@@ -134,6 +143,7 @@ async function render(): Promise<void> {
   editingView = false;
   const parts = location.hash.replace(/^#\/?/, '').split('/').filter(Boolean);
   try {
+    if (parts[0] === 'backup') return await backupView(viewCtx, repo);
     if (parts[0] === 'library') return await viewLibrary(viewCtx);
     if (parts[0] === 'schedule') {
       if (parts[1] === 'new') return await sched.viewAppointmentForm(null, parts[2] ?? todayTaipei());
@@ -177,6 +187,7 @@ async function viewPatientList(query = '', includeArchived = false): Promise<voi
         ),
       ),
     ),
+    h('p', { className: 'muted' }, h('a', { href: '#/backup' }, '備份與還原'), `(${lastBackupLabel()})`),
   ]);
   await refreshStatus();
 }
@@ -646,7 +657,7 @@ async function main(): Promise<void> {
   void doSync();
 
   if (import.meta.env.PROD && 'serviceWorker' in navigator) {
-    void navigator.serviceWorker.register('/sw.js').catch(() => undefined);
+    void navigator.serviceWorker.register('./sw.js').catch(() => undefined);
   }
 }
 

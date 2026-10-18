@@ -4,6 +4,7 @@ import { buildFamilySummary, jargonLeft, summaryToText } from '../shared/family'
 import { arriveMessages, chartFlex, departMessages, hepMessages, text } from '../shared/linemsg';
 import type { Encounter, Exercise, LineMessage, LineMessageKind, Patient } from '../shared/schema';
 import { h } from './dom';
+import { STATIC_MODE } from './env';
 import type { ViewCtx } from './schedule';
 
 interface LineStatus {
@@ -20,6 +21,7 @@ interface LinkInfo {
 }
 
 async function getJson<T>(url: string, init?: RequestInit): Promise<T | null> {
+  if (STATIC_MODE) return null;
   try {
     const res = await fetch(url, { ...init, signal: AbortSignal.timeout(5000) });
     return res.ok ? ((await res.json()) as T) : null;
@@ -40,7 +42,7 @@ export async function patientLineCard(ctx: ViewCtx, p: Patient): Promise<HTMLEle
   const status = await getJson<LineStatus>('/api/line/status');
   const card = h('div', { className: 'card' }, h('h2', null, 'LINE 通知'));
   if (!status) {
-    card.append(h('p', { className: 'muted' }, '無法連線到伺服器,暫時無法管理 LINE 綁定。'));
+    card.append(h('p', { className: 'muted' }, STATIC_MODE ? '純本機版無法使用 LINE;請在自己的電腦執行 npm start。' : '無法連線到伺服器,暫時無法管理 LINE 綁定。'));
     return card;
   }
   if (!status.enabled) {

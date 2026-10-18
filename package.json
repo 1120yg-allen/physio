@@ -8,6 +8,7 @@
   "scripts": {
     "dev": "node scripts/dev.mjs",
     "build": "tsc --noEmit && vite build",
+    "build:pages": "node scripts/build-pages.mjs",
     "start": "node scripts/start.mjs",
     "serve": "tsx src/server/index.ts",
     "backup": "tsx src/server/cli.ts backup",
