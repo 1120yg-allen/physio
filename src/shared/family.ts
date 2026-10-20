@@ -7,6 +7,7 @@
 // - 不放:臨床推理、風險標記、生命徵象、常模/切點比較(不做判讀,也避免嚇到家屬)
 // 內容為個案健康資料,不得寫入 log。
 import type { Exercise, Goal, TestDef } from './schema';
+import { resourceLines, type Resource } from './resources';
 import type { Dose, SoapContent } from './soap';
 
 export interface TrendPt {
@@ -29,6 +30,8 @@ export interface FamilySummary {
   home: string[];
   /** 「接下來怎麼做」——必定非空,且為最後一段 */
   next: string[];
+  /** 附在「接下來怎麼做」之後的運動資源網站(有處方居家運動時才附) */
+  resources: Resource[];
 }
 
 export interface FamilyInput {
@@ -42,6 +45,8 @@ export interface FamilyInput {
   /** 各測驗歷次數值(含本次,依時間排序) */
   trends: Map<string, TrendPt[]>;
   nextAppointment: { date: string; time: string } | null;
+  /** 運動資源網站;空陣列或未提供則不附 */
+  resources?: Resource[];
 }
 
 // ───────────── 術語替換 ─────────────
@@ -211,7 +216,7 @@ export function buildFamilySummary(i: FamilyInput): FamilySummary {
   if (i.nextAppointment) next.push(`下次預計 ${mdw(i.nextAppointment.date)} ${i.nextAppointment.time} 到府`);
   if (next.length === 0) next.push('請依治療師的建議,維持平常的活動;有任何不舒服請隨時聯絡我們');
 
-  return { greeting: `${i.patientName}今天(${mdw(i.serviceDate)})的治療摘要`, did, progress, chart, home, next };
+  return { greeting: `${i.patientName}今天(${mdw(i.serviceDate)})的治療摘要`, did, progress, chart, home, next, resources: home.length > 0 ? (i.resources ?? []) : [] };
 }
 
 /** 摘要純文字版(可由治療師在傳送前編輯) */
@@ -219,6 +224,7 @@ export function summaryToText(s: FamilySummary, clinicName: string): string {
   const bullets = (xs: string[]): string => xs.map((x) => `・${x}`).join('\n');
   const parts = [`【${clinicName}】${s.greeting}`, `今天做了什麼\n${bullets(s.did)}`, `進步在哪\n${bullets(s.progress)}`];
   if (s.home.length) parts.push(`回家要做的運動\n${bullets(s.home)}`);
-  parts.push(`接下來怎麼做\n${bullets(s.next)}`);
+  // 資源網站放在「接下來怎麼做」段落內,確保摘要仍以此段收尾
+  parts.push([`接下來怎麼做\n${bullets(s.next)}`, ...(s.resources.length ? resourceLines(s.resources) : [])].join('\n'));
   return parts.join('\n\n');
 }

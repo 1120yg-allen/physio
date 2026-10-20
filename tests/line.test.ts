@@ -419,9 +419,8 @@ describe('HTTP:webhook 專用埠與管理端點', () => {
     const p = await svc.createPatient(patientInput);
     await wh({ repo, store: line.store, api, svc, clock: fakeClock('2026-10-19T18:00:00+08:00') } as never)([msgEvent('U1', line.store.createBindCode(p.id, 'family', '2026-10-19T18:00:00+08:00').code)]);
     // 此時還沒有任何行程;之後裝置同步了「明天」的行程
-    const start = new Date(Date.now() + 8 * 3600_000 + 86_400_000);
-    const day = start.toISOString().slice(0, 10);
-    const a = await svc.createAppointment({ patient_id: p.id, track: 'self_pay', date: day, start: '23:00', end: '23:45' });
+    // 伺服器時鐘為 2026-10-19 18:30(fakeClock 起點 + 數秒),所以「明天」固定是 2026-10-20,不依賴執行當天的日期
+    const a = await svc.createAppointment({ patient_id: p.id, track: 'self_pay', date: '2026-10-20', start: '23:00', end: '23:45' });
     const res = await fetch(`${base}/api/sync`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ since: 0, changes: [{ table: 'appointments', row: a }] }) });
     expect(res.ok).toBe(true);
     await new Promise((r) => setTimeout(r, 300));

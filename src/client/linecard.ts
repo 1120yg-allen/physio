@@ -3,6 +3,7 @@
 import { buildFamilySummary, jargonLeft, summaryToText } from '../shared/family';
 import { arriveMessages, chartFlex, departMessages, hepMessages, text } from '../shared/linemsg';
 import type { Encounter, Exercise, LineMessage, LineMessageKind, Patient } from '../shared/schema';
+import { DEFAULT_RESOURCES, parseResources, resourcesToText, type Resource } from '../shared/resources';
 import { h } from './dom';
 import { STATIC_MODE } from './env';
 import type { ViewCtx } from './schedule';
@@ -29,6 +30,37 @@ async function getJson<T>(url: string, init?: RequestInit): Promise<T | null> {
     return null; // 離線或服務未啟動:LINE 管理不可用,但不影響其他功能
   }
 }
+
+const RES_KEY = 'physio.resources';
+const RES_ON_KEY = 'physio.resources.on';
+
+/** 運動資源網站清單(存在這台裝置的瀏覽器;未自訂則用預設) */
+export function getResources(): Resource[] {
+  try {
+    const raw = localStorage.getItem(RES_KEY);
+    if (raw) return parseResources(raw).resources;
+  } catch {
+    /* 無法讀取時用預設 */
+  }
+  return [...DEFAULT_RESOURCES];
+}
+
+export function setResources(text: string | null): void {
+  try {
+    if (text === null) localStorage.removeItem(RES_KEY);
+    else localStorage.setItem(RES_KEY, text);
+  } catch {
+    /* 略過 */
+  }
+}
+
+const resourcesOn = (): boolean => {
+  try {
+    return localStorage.getItem(RES_ON_KEY) !== '0';
+  } catch {
+    return true;
+  }
+};
 
 const KIND_LABEL: Record<LineMessageKind, string> = { arrive: '到達通知', depart: '完成通知', summary: '治療摘要', hep: '居家運動', reminder: '預約提醒' };
 const STATUS_LABEL = { queued: '待送出', sent: '已送出', skipped: '已略過', failed: '失敗' } as const;
@@ -128,8 +160,29 @@ export async function encounterLineCard(ctx: ViewCtx, p: Patient, e: Encounter):
   // 摘要與 HEP(自費、已簽章)
   if (e.track === 'self_pay' && e.signed_at !== null) {
     const input = await svc.familySummaryInput(e.id);
-    const summary = buildFamilySummary(input);
-    const area = h('textarea', { value: summaryToText(summary, clinic), lang: 'zh-TW', rows: 14 });
+    const rs = getResources();
+    let useRes = resourcesOn() && rs.length > 0;
+    const make = (): ReturnType<typeof buildFamilySummary> => buildFamilySummary({ ...input, resources: useRes ? rs : [] });
+    let summary = make();
+    let generated = summaryToText(summary, clinic);
+    const area = h('textarea', { value: generated, lang: 'zh-TW', rows: 14 });
+    const resCb = h('input', { type: 'checkbox', checked: useRes, disabled: rs.length === 0 });
+    resCb.addEventListener('change', () => {
+      if (area.value !== generated && !confirm('重新產生摘要會覆蓋你剛才的修改,確定嗎?')) {
+        resCb.checked = useRes;
+        return;
+      }
+      useRes = resCb.checked;
+      try {
+        localStorage.setItem(RES_ON_KEY, useRes ? '1' : '0');
+      } catch {
+        /* 略過 */
+      }
+      summary = make();
+      generated = summaryToText(summary, clinic);
+      area.value = generated;
+      paintWarn();
+    });
     const warn = h('div', { className: 'muted' });
     const paintWarn = (): void => {
       const left = jargonLeft(area.value);
@@ -142,6 +195,7 @@ export async function encounterLineCard(ctx: ViewCtx, p: Patient, e: Encounter):
       h('h2', null, '家屬版摘要'),
       h('p', { className: 'muted' }, '由系統以規則轉成白話(未使用 AI)。傳送前請檢查並可直接修改文字;不含臨床推理、風險標記與生命徵象。'),
       area, warn,
+      h('label', { className: 'muted' }, resCb, ` 附上運動資源網站(${rs.length} 個,有居家運動處方時才附;可在「動作庫」編輯)`),
       summary.chart ? h('p', { className: 'muted' }, `將另附一張「${summary.chart.title}」數值長條圖。`) : '',
       h('div', { className: 'row' },
         h('button', { className: 'primary', onclick: () => {
@@ -149,7 +203,7 @@ export async function encounterLineCard(ctx: ViewCtx, p: Patient, e: Encounter):
           void run(() => queue('summary', [text(area.value), ...(summary.chart ? [chartFlex(summary.chart)] : [])]));
         } }, '傳送摘要給家屬'),
         e.signed_at && input.content.plan.hep.length > 0
-          ? h('button', { onclick: () => void run(() => queue('hep', hepMessages(clinic, input.content.plan.hep, input.exercises))) }, '推送居家運動(含示範影片)')
+          ? h('button', { onclick: () => void run(() => queue('hep', hepMessages(clinic, input.content.plan.hep, input.exercises, useRes ? rs : []))) }, '推送居家運動(含示範影片)')
           : ''),
     );
     if (input.content.plan.hep.length > 0) {
@@ -196,7 +250,23 @@ export async function viewLibrary(ctx: ViewCtx): Promise<void> {
     });
     return h('div', { className: 'irow' }, h('div', { className: 'top' }, h('span', { className: 'badge' }, CAT[ex.category]), h('span', { className: 'nm' }, ex.name)), input);
   };
+  const resArea = h('textarea', { value: resourcesToText(getResources()), rows: 6, placeholder: '每行一個:名稱 | 網址', lang: 'zh-TW' });
+  const resMsg = h('div');
+  const resCard = h('div', { className: 'card' },
+    h('h2', null, '運動資源網站'),
+    h('p', { className: 'muted' }, '傳送居家運動與治療摘要時,會在最後附上這些網站,讓病人自行搜尋動作示範。訊息會註明「請以治療師示範與指示的動作和次數為準」。每行一個,格式:名稱 | 網址。此清單存在這台裝置的瀏覽器。'),
+    resArea, resMsg,
+    h('div', { className: 'row' },
+      h('button', { className: 'primary', onclick: () => {
+        const { resources, invalid } = parseResources(resArea.value);
+        if (invalid.length) { resMsg.replaceChildren(ctx.errorBox(`以下行的網址不是 http(s):// 開頭,未儲存:${invalid.join(';')}`)); return; }
+        setResources(resourcesToText(resources));
+        resMsg.replaceChildren(h('div', { className: 'ok' }, `已儲存 ${resources.length} 個網站`));
+      } }, '儲存'),
+      h('button', { onclick: () => { setResources(null); resArea.value = resourcesToText(DEFAULT_RESOURCES); resMsg.replaceChildren(h('div', { className: 'ok' }, '已還原預設清單')); } }, '還原預設')),
+  );
   ctx.layout('動作庫', [
+    resCard,
     h('p', { className: 'muted' }, '在此為動作貼上示範影片網址(例如 YouTube 不公開連結)。推送居家運動時會一併附上。'),
     msg,
     h('div', { className: 'card' }, ...list.map(row)),

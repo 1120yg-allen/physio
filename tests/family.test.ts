@@ -143,3 +143,54 @@ describe('LINE 訊息組裝', () => {
     expect(JSON.stringify(f)).toContain('進步');
   });
 });
+
+import { DEFAULT_RESOURCES, isHttpUrl, parseResources, resourceLines, resourcesToText } from '../src/shared/resources';
+
+describe('運動資源網站', () => {
+  it('預設清單含指定的四個網站,且都是 https', () => {
+    expect(DEFAULT_RESOURCES.map((r) => r.url)).toEqual([
+      'https://vimeo.com/showcase/11304854',
+      'https://chinesetrad.physiotherapyexercises.com',
+      'https://ausactive.org.au',
+      'https://www.exercises.com.au',
+    ]);
+    for (const r of DEFAULT_RESOURCES) expect(isHttpUrl(r.url)).toBe(true);
+  });
+
+  it('解析:名稱|網址、只有網址、空白行;非 http(s) 或含空白的行列為不合法', () => {
+    const { resources, invalid } = parseResources('我的站 | https://a.example.com/x\nhttps://b.example.com/\n\n  \njavascript:alert(1)\nftp://x.y\n壞 | https://c d.com');
+    expect(resources).toEqual([{ name: '我的站', url: 'https://a.example.com/x' }, { name: 'b.example.com', url: 'https://b.example.com/' }]);
+    expect(invalid).toEqual(['javascript:alert(1)', 'ftp://x.y', '壞 | https://c d.com']);
+    expect(parseResources(resourcesToText(DEFAULT_RESOURCES)).resources).toEqual([...DEFAULT_RESOURCES]); // 往返無損
+  });
+
+  it('訊息文字:有網站才附,並註明以治療師指示為準', () => {
+    expect(resourceLines([])).toEqual([]);
+    const lines = resourceLines(DEFAULT_RESOURCES);
+    expect(lines[0]).toContain('請以治療師示範與指示的動作和次數為準');
+    expect(lines).toHaveLength(5);
+    expect(lines[1]).toBe('・Vimeo 示範影片專區:https://vimeo.com/showcase/11304854');
+  });
+
+  it('居家運動推送:附上網站清單;未提供則不附', () => {
+    const items = [{ item_id: 'ex-bridge', dose: { sets: 3, reps: 10, resistance: null, duration: null }, video_ref: null }];
+    const withRes = hepMessages('診所', items, SEED_EXERCISES, DEFAULT_RESOURCES)[0]!.text as string;
+    for (const r of DEFAULT_RESOURCES) expect(withRes).toContain(r.url);
+    expect(withRes.indexOf('請先停下來並聯絡我們')).toBeLessThan(withRes.indexOf('https://vimeo.com'));
+    expect(hepMessages('診所', items, SEED_EXERCISES)[0]!.text as string).not.toContain('vimeo');
+  });
+
+  it('家屬摘要:有居家運動處方時附網站,且摘要仍以「接下來怎麼做」段落收尾;沒有處方不附', () => {
+    const withHep = summaryToText(buildFamilySummary(input({ resources: [...DEFAULT_RESOURCES] })), '診所');
+    const last = withHep.split('\n\n').pop()!;
+    expect(last.startsWith('接下來怎麼做')).toBe(true);
+    for (const r of DEFAULT_RESOURCES) expect(last).toContain(r.url);
+    expect(last).toContain('請以治療師示範與指示的動作和次數為準');
+    const noHep = emptySoap();
+    noHep.subjective.chief_complaint = 'x';
+    const none = summaryToText(buildFamilySummary(input({ content: noHep, resources: [...DEFAULT_RESOURCES] })), '診所');
+    expect(none).not.toContain('vimeo.com');
+    expect(summaryToText(buildFamilySummary(input()), '診所')).not.toContain('vimeo.com'); // 未提供 → 不附
+    expect(jargonLeft(withHep)).not.toContain('Vimeo'); // 網站名稱不算專業術語警示
+  });
+});

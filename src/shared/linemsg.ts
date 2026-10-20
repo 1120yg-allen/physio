@@ -1,5 +1,6 @@
 // LINE 訊息組裝:到達/完成通知、HEP 推送、數值長條圖(Flex)。純函式,不含網路呼叫。
 import { plainDose, plainExerciseName, plainify, type FamilyChart } from './family';
+import { resourceLines, type Resource } from './resources';
 import type { Exercise } from './schema';
 import type { HepItem } from './soap';
 
@@ -22,14 +23,15 @@ export function reminderMessages(clinicName: string, dateLabel: string, time: st
 }
 
 /** HEP 推送:每項運動附白話說明與示範影片連結(影片網址由治療師在動作庫維護) */
-export function hepMessages(clinicName: string, items: HepItem[], exercises: Exercise[]): LineMessageObj[] {
+export function hepMessages(clinicName: string, items: HepItem[], exercises: Exercise[], resources: readonly Resource[] = []): LineMessageObj[] {
   const lines = items.map((h, idx) => {
     const ex = exercises.find((e) => e.id === h.item_id);
     const dose = plainDose(h.dose);
     const url = h.video_ref ?? ex?.video_ref ?? null;
     return [`${idx + 1}. ${plainExerciseName(ex, h.item_id)}`, dose ? `   ${dose}` : null, url ? `   ▶ 示範影片:${url}` : null].filter(Boolean).join('\n');
   });
-  return [text([`【${clinicName}】居家運動`, '', ...lines, '', '練習時如果疼痛變厲害、頭暈或不舒服,請先停下來並聯絡我們。'].join('\n'))];
+  const extra = resourceLines(resources);
+  return [text([`【${clinicName}】居家運動`, '', ...lines, '', '練習時如果疼痛變厲害、頭暈或不舒服,請先停下來並聯絡我們。', ...(extra.length ? ['', ...extra] : [])].join('\n'))];
 }
 
 const BAR_COLOR = '#0e7490';
