@@ -23,6 +23,18 @@ import { httpTransport, runSync, type SyncOutcome } from './sync';
 
 const TRACK_LABEL: Record<Track, string> = { self_pay: '自費', ltc: '長照', both: '自費+長照' };
 const ETRACK_LABEL: Record<EncounterTrack, string> = { self_pay: '自費', ltc: '長照' };
+/** 取得伺服器見證時間;離線或純本機版回傳 null(簽章時間僅來自裝置時鐘,標示「待確認」)。 */
+async function fetchWitness(): Promise<Map<string, string> | null> {
+  if (STATIC_MODE || !navigator.onLine) return null;
+  try {
+    const r = await fetch('api/witness', { signal: AbortSignal.timeout(3000) });
+    if (!r.ok) return null;
+    return new Map(((await r.json()) as { id: string; t: string }[]).map((w) => [w.id, w.t]));
+  } catch {
+    return null;
+  }
+}
+
 const STATUS_LABEL = { draft: '草稿', signed: '已簽章', submitted: '已送出申報' } as const;
 const LOC_LABEL: Record<Location, string> = { home: '居家', facility: '機構', community: '社區' };
 
@@ -533,12 +545,13 @@ async function viewEncounter(id: string): Promise<void> {
     h('span', { className: `badge ${e.status}` }, STATUS_LABEL[e.status]), h('span', { className: 'badge' }, ETRACK_LABEL[e.track]), h('span', { className: 'badge' }, `版本 v${e.version}`),
     e.id !== latest.id ? h('a', { className: 'btn', href: `#/encounter/${latest.id}` }, '前往最新版本') : null);
 
+  const witness = await fetchWitness();
   const versionCard = h('div', { className: 'card' },
     h('h2', null, '版本軌跡'),
     chain.slice().reverse().map((v) =>
       h('div', { className: `version${v.id === e.id ? ' cur' : ''}` },
         h('a', { href: `#/encounter/${v.id}` }, `v${v.version}`), ` · ${STATUS_LABEL[v.status]}`,
-        h('div', { className: 'muted' }, `建立 ${v.created_at}${v.signed_at ? `\n簽章 ${v.signed_at}` : ''}`),
+        h('div', { className: 'muted' }, `建立 ${v.created_at}${v.signed_at ? `\n簽章 ${v.signed_at}(裝置時間)\n${witness === null ? '伺服器見證:無法連線,待確認' : witness.has(v.id) ? `伺服器見證 ${witness.get(v.id)}` : '伺服器見證:待伺服器確認'}` : ''}`),
       ),
     ),
   );

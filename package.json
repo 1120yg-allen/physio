@@ -12,6 +12,7 @@
     "start": "node scripts/start.mjs",
     "serve": "tsx src/server/index.ts",
     "backup": "tsx src/server/cli.ts backup",
+    "verify": "tsx src/server/cli.ts verify",
     "restore": "tsx src/server/cli.ts restore",
     "gcal:auth": "tsx src/server/cli.ts gcal-auth",
     "line:test": "tsx src/server/cli.ts line-test",

@@ -1,5 +1,6 @@
 // 命令列:npm run backup / npm run restore -- <備份檔>
 import { SqliteRepo } from './db';
+import { verifyWitness, witnessPending } from './witness';
 import { backupNow, listBackups, restoreBackup } from './backup';
 import { randomUUID } from 'node:crypto';
 import { dirname } from 'node:path';
@@ -10,7 +11,14 @@ import { accessTokenProvider, createDedicatedCalendar, gcalFiles, readConfig, re
 const cfg = loadConfig();
 const [cmd, arg] = process.argv.slice(2);
 
-if (cmd === 'backup') {
+if (cmd === 'verify') {
+  const repo = new SqliteRepo(cfg.dbPath);
+  witnessPending(repo);
+  const r = verifyWitness(repo);
+  console.log(`見證鏈共 ${r.total} 筆。${r.problems.length === 0 ? '驗證通過:簽章紀錄完整、內容未被改動。' : '發現問題:\n  ' + r.problems.join('\n  ')}`);
+  repo.close();
+  process.exit(r.problems.length === 0 ? 0 : 1);
+} else if (cmd === 'backup') {
   const repo = new SqliteRepo(cfg.dbPath);
   console.log(`備份完成:${backupNow(repo, cfg.backupDir)}`);
   repo.close();
@@ -48,6 +56,6 @@ if (cmd === 'backup') {
   }
   console.log('授權完成。重新啟動服務(npm start)即可開始同步。');
 } else {
-  console.log('用法:npm run backup | npm run restore -- <備份檔> | npm run gcal:auth | npm run line:test');
+  console.log('用法:npm run backup | npm run restore -- <備份檔> | npm run verify | npm run gcal:auth | npm run line:test');
   process.exit(1);
 }

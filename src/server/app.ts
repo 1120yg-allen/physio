@@ -9,6 +9,7 @@ import type { GcalService } from './gcal/service';
 import type { LineService } from './line/service';
 import { crossSiteBlocked, hostAllowed, LOGIN_JS, LOGIN_PAGE, securityHeaders, type AccessLog, type HostPolicy, type SessionAuth } from './security';
 import { DomainError } from '../shared/validate';
+import { listWitness, witnessPending } from './witness';
 
 const MAX_BODY = 64 * 1024 * 1024;
 
@@ -60,6 +61,7 @@ function parseSyncRequest(raw: string): SyncRequest {
 
 export async function handleSync(repo: SqliteRepo, req: SyncRequest): Promise<SyncResponse> {
   const results = await repo.transaction(() => applyChanges(repo, req.changes));
+  witnessPending(repo); // 新簽章的紀錄:以伺服器時間蓋章
   // 回傳 client 尚未取得的變更(包含剛接受的,client 以 id 去重)
   const pulled = repo.changesSince(req.since);
   return { results, changes: pulled.map(({ table, row }) => ({ table, row })), cursor: repo.currentSeq() };
@@ -155,6 +157,9 @@ export function createApp(repo: SqliteRepo, staticDir: string, services: Service
           // 裝置排入的 LINE 訊息(到達/完成/摘要/HEP):同步抵達後立即送出
           if (body.changes.some((c) => c.table === 'line_messages')) void line?.drain();
           return;
+        }
+        if (url === '/api/witness' && req.method === 'GET') {
+          return sendJson(res, 200, listWitness(repo).map((w) => ({ id: w.encounter_id, t: w.server_time, h: w.content_hash.slice(0, 12) })));
         }
         if (url === '/api/gcal/status' && req.method === 'GET') {
           return sendJson(res, 200, gcal ? gcal.status() : { enabled: false, reason: '未啟用', privacy: 'minimal', running: false, last_run_at: null, last_ok: null, last_error: null, last_result: null });

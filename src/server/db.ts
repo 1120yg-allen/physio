@@ -157,6 +157,17 @@ const MIGRATIONS: readonly Migration[] = [
     ],
     run: (db) => ensureColumns(db),
   },
+  {
+    version: 7,
+    name: '簽章見證鏈(sign_witness):伺服器時間 + 雜湊鏈,僅可新增',
+    sql: [
+      `CREATE TABLE IF NOT EXISTS sign_witness (
+         encounter_id TEXT PRIMARY KEY, seq INTEGER NOT NULL UNIQUE, server_time TEXT NOT NULL,
+         content_hash TEXT NOT NULL, prev_hash TEXT NOT NULL, chain_hash TEXT NOT NULL)`,
+      `CREATE TRIGGER IF NOT EXISTS trg_sign_witness_no_update BEFORE UPDATE ON sign_witness BEGIN SELECT RAISE(ABORT, '見證紀錄不可修改'); END`,
+      `CREATE TRIGGER IF NOT EXISTS trg_sign_witness_no_delete BEFORE DELETE ON sign_witness BEGIN SELECT RAISE(ABORT, '見證紀錄不可刪除'); END`,
+    ],
+  },
 ];
 
 function toSql(c: ColumnDef, v: unknown): SQLInputValue {
